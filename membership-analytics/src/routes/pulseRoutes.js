@@ -1,0 +1,17 @@
+const express = require('express');
+const controller = require('../controllers/pulseController');
+const router = express.Router();
+router.get('/overview', controller.overview);
+router.get('/ivrs', controller.ivrs);
+router.post('/refresh', controller.refresh);
+router.get('/refresh/status', controller.refreshStatus);
+router.get('/refresh/precheck', controller.refreshPrecheck);
+router.post('/constituencies/warm', controller.warmConstituencies);
+router.get('/constituencies/warm/status', controller.warmStatus);
+router.get('/panel/surveys', controller.panelSurveys);
+router.get('/panel', controller.panel);
+router.get('/survey/compare', controller.surveyCompare);
+router.get('/survey', controller.survey);
+router.get('/survey/ac', controller.surveyAc);
+router.get('/constituency/:name', controller.constituency);
+module.exports = router;

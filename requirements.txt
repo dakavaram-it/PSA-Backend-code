@@ -1,0 +1,13 @@
+# Union of the three projects' own requirements, for running gateway.py.
+# Each sub-directory keeps its own requirements.txt for standalone runs.
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+python-dotenv==1.0.1
+PyMySQL==1.1.1
+
+# membership-analytics/backend-python only
+pydantic==2.10.2
+pydantic-settings==2.6.1
+SQLAlchemy==2.0.36
+numpy==2.2.1
+openpyxl==3.1.5
