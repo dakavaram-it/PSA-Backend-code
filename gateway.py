@@ -3,7 +3,6 @@
 Each project's backend is imported unchanged from its own sub-directory and
 mounted under a prefix named after the project:
 
-    /membership-analytics/...   membership-analytics/backend-python  (FastAPI)
     /portal-frontend-code/...   portal-frontend-code/Backend         (FastAPI)
     /admin-dashboard/...        admin-dashboard/Backend              (FastAPI)
 
@@ -27,7 +26,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
 import re
 import sys
 from pathlib import Path
@@ -102,18 +100,6 @@ def _load_module(module_name: str, file_path: Path):
     return module
 
 
-def _load_membership_analytics() -> FastAPI:
-    base = ROOT / "membership-analytics" / "backend-python"
-    load_dotenv(base / ".env", override=True)
-    # cache_dir defaults to the relative "cache", which would resolve against the
-    # gateway's working directory instead of the project's own cache/ contents.
-    os.environ["CACHE_DIR"] = str(base / "cache")
-    sys.path.insert(0, str(base))
-    import app.main  # noqa: E402  (sys.path must be set up first)
-
-    return app.main.app
-
-
 def _load_portal() -> FastAPI:
     base = ROOT / "portal-frontend-code"
     load_dotenv(base / ".env", override=True)
@@ -132,7 +118,6 @@ def _load_admin() -> FastAPI:
 # environment at import time, but point at different databases. Each is loaded
 # straight after its own .env, so it snapshots its own credentials.
 PROJECTS = [
-    ("Membership Analytics", "/membership-analytics", _load_membership_analytics),
     ("Portal (Local Body Elections)", "/portal-frontend-code", _load_portal),
     ("Admin Dashboard", "/admin-dashboard", _load_admin),
 ]
@@ -156,8 +141,7 @@ for _name, _prefix, _loader in PROJECTS:
 @gateway.on_event("startup")
 def _run_sub_app_startups():
     # Starlette does not propagate lifespan to mounted apps, so the sub-apps' own
-    # startup hooks (membership-analytics warms its DB pools and caches there)
-    # would otherwise never fire.
+    # startup hooks would otherwise never fire.
     for name, _prefix, sub in MOUNTED:
         for handler in sub.router.on_startup:
             try:

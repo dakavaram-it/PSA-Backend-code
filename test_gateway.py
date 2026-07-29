@@ -75,7 +75,7 @@ def test_redirects_keep_the_project_prefix():
     # header being rewritten the client is sent to /api/members and gets a 404.
     client = TestClient(gateway.gateway, follow_redirects=False)
 
-    for url in ["/admin-dashboard/api/members/", "/membership-analytics/health/"]:
+    for url in ["/admin-dashboard/api/members/"]:
         response = client.get(url)
         assert response.status_code == 307, f"{url} no longer redirects"
         location = response.headers["location"]
