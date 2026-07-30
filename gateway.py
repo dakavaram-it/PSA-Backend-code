@@ -16,7 +16,7 @@ module builds one merged OpenAPI document instead - every path prefixed with its
 mount, every operation tagged with its project name - served at /openapi.json
 with a single Swagger UI at /docs.
 
-    python gateway.py            run on http://127.0.0.1:8000  (docs at /docs)
+    python gateway.py            run on http://127.0.0.1:4000  (docs at /docs)
     python gateway.py --dump     write the merged spec to openapi.json and exit
 
 Each backend still runs standalone from its own sub-directory exactly as before.
