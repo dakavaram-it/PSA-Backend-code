@@ -616,6 +616,9 @@
     },
     "/admin-dashboard/api/members": {
       "get": {
+        "tags": [
+          "Admin Dashboard - members"
+        ],
         "summary": "[Admin Dashboard] Members",
         "operationId": "Admin_Dashboard__members_api_members_get",
         "parameters": [
@@ -649,12 +652,12 @@
               }
             }
           }
-        },
-        "tags": [
-          "Admin Dashboard - API"
-        ]
+        }
       },
       "post": {
+        "tags": [
+          "Admin Dashboard - members"
+        ],
         "summary": "[Admin Dashboard] Create Member",
         "operationId": "Admin_Dashboard__create_member_api_members_post",
         "requestBody": {
@@ -686,14 +689,14 @@
               }
             }
           }
-        },
-        "tags": [
-          "Admin Dashboard - API"
-        ]
+        }
       }
     },
     "/admin-dashboard/api/members/{member_id}": {
       "get": {
+        "tags": [
+          "Admin Dashboard - members"
+        ],
         "summary": "[Admin Dashboard] Member",
         "operationId": "Admin_Dashboard__member_api_members__member_id__get",
         "parameters": [
@@ -726,12 +729,12 @@
               }
             }
           }
-        },
-        "tags": [
-          "Admin Dashboard - API"
-        ]
+        }
       },
       "put": {
+        "tags": [
+          "Admin Dashboard - members"
+        ],
         "summary": "[Admin Dashboard] Save Member",
         "operationId": "Admin_Dashboard__save_member_api_members__member_id__put",
         "parameters": [
@@ -774,12 +777,12 @@
               }
             }
           }
-        },
-        "tags": [
-          "Admin Dashboard - API"
-        ]
+        }
       },
       "delete": {
+        "tags": [
+          "Admin Dashboard - members"
+        ],
         "summary": "[Admin Dashboard] Delete Member",
         "operationId": "Admin_Dashboard__delete_member_api_members__member_id__delete",
         "parameters": [
@@ -812,268 +815,14 @@
               }
             }
           }
-        },
-        "tags": [
-          "Admin Dashboard - API"
-        ]
-      }
-    },
-    "/admin-dashboard/api/lookups/user-types": {
-      "get": {
-        "summary": "[Admin Dashboard] User Types",
-        "operationId": "Admin_Dashboard__user_types_api_lookups_user_types_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          }
-        },
-        "tags": [
-          "Admin Dashboard - API"
-        ]
-      }
-    },
-    "/admin-dashboard/api/lookups/user-levels": {
-      "get": {
-        "summary": "[Admin Dashboard] User Levels",
-        "operationId": "Admin_Dashboard__user_levels_api_lookups_user_levels_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          }
-        },
-        "tags": [
-          "Admin Dashboard - API"
-        ]
-      }
-    },
-    "/admin-dashboard/api/lookups/components": {
-      "get": {
-        "summary": "[Admin Dashboard] Components",
-        "operationId": "Admin_Dashboard__components_api_lookups_components_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          }
-        },
-        "tags": [
-          "Admin Dashboard - API"
-        ]
-      }
-    },
-    "/admin-dashboard/api/lookups/constituencies": {
-      "get": {
-        "summary": "[Admin Dashboard] Constituencies",
-        "operationId": "Admin_Dashboard__constituencies_api_lookups_constituencies_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          }
-        },
-        "tags": [
-          "Admin Dashboard - API"
-        ]
-      }
-    },
-    "/admin-dashboard/api/lookups/parliaments": {
-      "get": {
-        "summary": "[Admin Dashboard] Parliaments",
-        "operationId": "Admin_Dashboard__parliaments_api_lookups_parliaments_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          }
-        },
-        "tags": [
-          "Admin Dashboard - API"
-        ]
-      }
-    },
-    "/admin-dashboard/api/cadre/{mid}": {
-      "get": {
-        "summary": "[Admin Dashboard] Cadre",
-        "operationId": "Admin_Dashboard__cadre_api_cadre__mid__get",
-        "parameters": [
-          {
-            "name": "mid",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Mid"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Admin_Dashboard__HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Admin Dashboard - API"
-        ]
-      }
-    },
-    "/admin-dashboard/api/cadre": {
-      "post": {
-        "summary": "[Admin Dashboard] Create Cadre",
-        "operationId": "Admin_Dashboard__create_cadre_api_cadre_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/Admin_Dashboard__CadreCreate"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Admin_Dashboard__HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Admin Dashboard - API"
-        ]
-      }
-    },
-    "/admin-dashboard/api/cadre/by-mobile/{mobile}": {
-      "get": {
-        "summary": "[Admin Dashboard] Cadre By Mobile",
-        "operationId": "Admin_Dashboard__cadre_by_mobile_api_cadre_by_mobile__mobile__get",
-        "parameters": [
-          {
-            "name": "mobile",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Mobile"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Admin_Dashboard__HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Admin Dashboard - API"
-        ]
-      }
-    },
-    "/admin-dashboard/api/cadre/{mid}/access-types": {
-      "get": {
-        "summary": "[Admin Dashboard] Cadre Access Types",
-        "operationId": "Admin_Dashboard__cadre_access_types_api_cadre__mid__access_types_get",
-        "parameters": [
-          {
-            "name": "mid",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Mid"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Admin_Dashboard__HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Admin Dashboard - API"
-        ]
+        }
       }
     },
     "/admin-dashboard/api/members/{member_id}/role": {
       "put": {
+        "tags": [
+          "Admin Dashboard - members"
+        ],
         "summary": "[Admin Dashboard] Update Role",
         "operationId": "Admin_Dashboard__update_role_api_members__member_id__role_put",
         "parameters": [
@@ -1116,14 +865,14 @@
               }
             }
           }
-        },
-        "tags": [
-          "Admin Dashboard - API"
-        ]
+        }
       }
     },
     "/admin-dashboard/api/members/{member_id}/active": {
       "put": {
+        "tags": [
+          "Admin Dashboard - members"
+        ],
         "summary": "[Admin Dashboard] Update Active",
         "operationId": "Admin_Dashboard__update_active_api_members__member_id__active_put",
         "parameters": [
@@ -1166,14 +915,14 @@
               }
             }
           }
-        },
-        "tags": [
-          "Admin Dashboard - API"
-        ]
+        }
       }
     },
     "/admin-dashboard/api/members/{member_id}/level": {
       "put": {
+        "tags": [
+          "Admin Dashboard - members"
+        ],
         "summary": "[Admin Dashboard] Update Level",
         "operationId": "Admin_Dashboard__update_level_api_members__member_id__level_put",
         "parameters": [
@@ -1216,14 +965,14 @@
               }
             }
           }
-        },
-        "tags": [
-          "Admin Dashboard - API"
-        ]
+        }
       }
     },
     "/admin-dashboard/api/members/{member_id}/components": {
       "post": {
+        "tags": [
+          "Admin Dashboard - members"
+        ],
         "summary": "[Admin Dashboard] Add Component",
         "operationId": "Admin_Dashboard__add_component_api_members__member_id__components_post",
         "parameters": [
@@ -1266,14 +1015,14 @@
               }
             }
           }
-        },
-        "tags": [
-          "Admin Dashboard - API"
-        ]
+        }
       }
     },
     "/admin-dashboard/api/members/{member_id}/components/{component_id}": {
       "delete": {
+        "tags": [
+          "Admin Dashboard - members"
+        ],
         "summary": "[Admin Dashboard] Remove Component",
         "operationId": "Admin_Dashboard__remove_component_api_members__member_id__components__component_id__delete",
         "parameters": [
@@ -1315,14 +1064,14 @@
               }
             }
           }
-        },
-        "tags": [
-          "Admin Dashboard - API"
-        ]
+        }
       }
     },
     "/admin-dashboard/api/members/{member_id}/otp": {
       "get": {
+        "tags": [
+          "Admin Dashboard - members"
+        ],
         "summary": "[Admin Dashboard] Member Otp",
         "operationId": "Admin_Dashboard__member_otp_api_members__member_id__otp_get",
         "parameters": [
@@ -1355,14 +1104,14 @@
               }
             }
           }
-        },
-        "tags": [
-          "Admin Dashboard - API"
-        ]
+        }
       }
     },
     "/admin-dashboard/api/members/{member_id}/otp/regenerate": {
       "post": {
+        "tags": [
+          "Admin Dashboard - members"
+        ],
         "summary": "[Admin Dashboard] Regenerate Otp",
         "operationId": "Admin_Dashboard__regenerate_otp_api_members__member_id__otp_regenerate_post",
         "parameters": [
@@ -1405,10 +1154,300 @@
               }
             }
           }
-        },
+        }
+      }
+    },
+    "/admin-dashboard/api/lookups/user-types": {
+      "get": {
         "tags": [
-          "Admin Dashboard - API"
-        ]
+          "Admin Dashboard - lookups"
+        ],
+        "summary": "[Admin Dashboard] User Types",
+        "operationId": "Admin_Dashboard__user_types_api_lookups_user_types_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin-dashboard/api/lookups/user-levels": {
+      "get": {
+        "tags": [
+          "Admin Dashboard - lookups"
+        ],
+        "summary": "[Admin Dashboard] User Levels",
+        "operationId": "Admin_Dashboard__user_levels_api_lookups_user_levels_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin-dashboard/api/lookups/components": {
+      "get": {
+        "tags": [
+          "Admin Dashboard - lookups"
+        ],
+        "summary": "[Admin Dashboard] Components",
+        "operationId": "Admin_Dashboard__components_api_lookups_components_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin-dashboard/api/lookups/constituencies": {
+      "get": {
+        "tags": [
+          "Admin Dashboard - lookups"
+        ],
+        "summary": "[Admin Dashboard] Constituencies",
+        "operationId": "Admin_Dashboard__constituencies_api_lookups_constituencies_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin-dashboard/api/lookups/parliaments": {
+      "get": {
+        "tags": [
+          "Admin Dashboard - lookups"
+        ],
+        "summary": "[Admin Dashboard] Parliaments",
+        "operationId": "Admin_Dashboard__parliaments_api_lookups_parliaments_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin-dashboard/api/cadre/{mid}": {
+      "get": {
+        "tags": [
+          "Admin Dashboard - cadre"
+        ],
+        "summary": "[Admin Dashboard] Cadre",
+        "operationId": "Admin_Dashboard__cadre_api_cadre__mid__get",
+        "parameters": [
+          {
+            "name": "mid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Mid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Admin_Dashboard__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin-dashboard/api/cadre/by-mobile/{mobile}": {
+      "get": {
+        "tags": [
+          "Admin Dashboard - cadre"
+        ],
+        "summary": "[Admin Dashboard] Cadre By Mobile",
+        "operationId": "Admin_Dashboard__cadre_by_mobile_api_cadre_by_mobile__mobile__get",
+        "parameters": [
+          {
+            "name": "mobile",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Mobile"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Admin_Dashboard__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin-dashboard/api/cadre/{mid}/access-types": {
+      "get": {
+        "tags": [
+          "Admin Dashboard - cadre"
+        ],
+        "summary": "[Admin Dashboard] Cadre Access Types",
+        "operationId": "Admin_Dashboard__cadre_access_types_api_cadre__mid__access_types_get",
+        "parameters": [
+          {
+            "name": "mid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Mid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Admin_Dashboard__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin-dashboard/api/cadre": {
+      "post": {
+        "tags": [
+          "Admin Dashboard - cadre"
+        ],
+        "summary": "[Admin Dashboard] Create Cadre",
+        "operationId": "Admin_Dashboard__create_cadre_api_cadre_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Admin_Dashboard__CadreCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Admin_Dashboard__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin-dashboard/api/login": {
+      "post": {
+        "tags": [
+          "Admin Dashboard - auth"
+        ],
+        "summary": "[Admin Dashboard] Login",
+        "operationId": "Admin_Dashboard__login_api_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Admin_Dashboard__LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Admin_Dashboard__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     }
   },
@@ -1638,6 +1677,25 @@
         ],
         "title": "LevelUpdateItem"
       },
+      "Admin_Dashboard__LoginRequest": {
+        "properties": {
+          "username": {
+            "type": "string",
+            "title": "Username"
+          },
+          "password": {
+            "type": "string",
+            "title": "Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "title": "LoginRequest",
+        "description": "Admin console sign-in. Checked against LOGIN_USERNAME/LOGIN_PASSWORD in\n.env and nothing else \u2014 see routers/auth.py."
+      },
       "Admin_Dashboard__MemberCreate": {
         "properties": {
           "tdp_cadre_id": {
@@ -1812,7 +1870,19 @@
       "description": "Served from /portal-frontend-code"
     },
     {
-      "name": "Admin Dashboard - API",
+      "name": "Admin Dashboard - auth",
+      "description": "Served from /admin-dashboard"
+    },
+    {
+      "name": "Admin Dashboard - cadre",
+      "description": "Served from /admin-dashboard"
+    },
+    {
+      "name": "Admin Dashboard - lookups",
+      "description": "Served from /admin-dashboard"
+    },
+    {
+      "name": "Admin Dashboard - members",
       "description": "Served from /admin-dashboard"
     }
   ]

@@ -108,9 +108,14 @@ def _load_portal() -> FastAPI:
 
 def _load_admin() -> FastAPI:
     base = ROOT / "admin-dashboard"
-    # admin's main.py loads "../.env" relative to the working directory, which only
-    # resolves when it is started from its own Backend/. Loaded explicitly here.
+    # override=True because admin's own config.py load_dotenv() will not replace
+    # variables the portal's .env already put in os.environ — without it the admin
+    # backend silently inherits the portal's DB credentials.
     load_dotenv(base / ".env", override=True)
+    # admin's Backend/ is a flat, package-less tree ("from config import ...",
+    # "from routers import ..."), which only resolves with Backend/ on sys.path —
+    # normally the working directory it is started from.
+    sys.path.insert(0, str(base / "Backend"))
     return _load_module("admin_backend_main", base / "Backend" / "main.py").app
 
 
@@ -262,4 +267,4 @@ if __name__ == "__main__":
     else:
         import uvicorn
 
-        uvicorn.run(gateway, host="0.0.0.0", port=8000)
+        uvicorn.run(gateway, host="0.0.0.0", port=4000)
