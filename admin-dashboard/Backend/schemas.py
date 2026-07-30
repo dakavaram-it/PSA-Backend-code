@@ -58,6 +58,11 @@ class CadreCreate(BaseModel):
     valid_till: Optional[datetime] = None  # admin-picked expiry; defaults to +10 min if omitted
 
 
+class CadreUpdate(BaseModel):
+    age: Optional[int] = None
+    gender: Optional[str] = None           # 'M' or 'F'
+
+
 class OtpRegenerate(BaseModel):
     otp: Optional[str] = None              # 6 digits; server generates one if omitted
     valid_till: Optional[datetime] = None  # admin-picked expiry; defaults to +10 min if omitted
