@@ -59,4 +59,6 @@ source repositories).
 - The frontends are deployed from their own repositories and reach these backends
   over HTTP — `admin-dashboard` (React + Vite) points `/api` here via
   `VITE_API_BASE` or `VITE_API_PROXY`. Changing a path or a response shape breaks
-  a bundle built elsewhere; `admin-dashboard/CLAUDE.md` records those contracts.
+  a bundle built elsewhere; `admin-dashboard/CLAUDE.md` and
+  `portal-frontend-code/Backend/CLAUDE.md` record those contracts. The portal's own
+  endpoint list, env vars and self-checks are in `portal-frontend-code/Backend/README.md`.

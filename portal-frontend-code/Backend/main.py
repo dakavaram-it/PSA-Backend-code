@@ -1,4 +1,6 @@
 import binascii
+import datetime
+import decimal
 import hashlib
 import hmac
 import os
@@ -34,6 +36,21 @@ DB = {
     "database": env("DB_NAME"),
     "cursorclass": pymysql.cursors.DictCursor,
 }
+
+# Cadre performance scores live in a database owned by the ratings pipeline, on its own
+# server. It is optional: with any of host/user/password unset, RATINGS_DB stays None
+# and S17 answers {"configured": false} instead of failing, so the wizard renders
+# without scores rather than not at all.
+RATINGS_DB = None
+if all(os.environ.get(k) for k in ("REPORT_RATINGS_DB_HOST", "REPORT_RATINGS_DB_USER", "REPORT_RATINGS_DB_PASSWORD")):
+    RATINGS_DB = {
+        "host": os.environ["REPORT_RATINGS_DB_HOST"],
+        "port": int(os.environ.get("REPORT_RATINGS_DB_PORT", "3306")),
+        "user": os.environ["REPORT_RATINGS_DB_USER"],
+        "password": os.environ["REPORT_RATINGS_DB_PASSWORD"],
+        "database": os.environ.get("REPORT_RATINGS_DB_NAME", "report_ratings"),
+        "cursorclass": pymysql.cursors.DictCursor,
+    }
 
 app = FastAPI(title="Local Body Elections API")
 
@@ -374,6 +391,200 @@ def get_proposal_candidates_by_proposal_position_id(proposal_position_id: int):
         "ORDER BY PC.proposal_candidate_id",
         (proposal_position_id,),
     )
+
+
+def ratings_query(sql, args=None):
+    conn = pymysql.connect(**RATINGS_DB)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, args)
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+# The two rating procedures take one comma-separated list of membership ids and write
+# their output to cadre_performace_report; the result sets they also emit are of no use
+# here, but every one has to be drained before the connection can be reused.
+def ratings_call(procedure, mids):
+    conn = pymysql.connect(**RATINGS_DB)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"CALL {procedure}(%s)", (",".join(mids),))
+            while cur.nextset():
+                pass
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def jsonable(row):
+    """DictCursor hands back Decimal and date objects, neither of which json encodes."""
+    out = {}
+    for key, value in row.items():
+        if isinstance(value, decimal.Decimal):
+            out[key] = float(value)
+        elif isinstance(value, (datetime.date, datetime.datetime)):
+            out[key] = str(value)
+        else:
+            out[key] = value
+    return out
+
+
+def normalize_mids(mids):
+    """Digits only ('#1506 7518' -> '15067518'), blanks dropped, order and first
+    occurrence kept. The wizard sends what S12 returned, but a pasted id may carry the
+    '#' the rest of the party's tooling prints."""
+    out = []
+    for raw in mids:
+        mid = "".join(ch for ch in str(raw) if ch.isdigit())
+        if mid and mid not in out:
+            out.append(mid)
+    return out
+
+
+def mid_key(mid):
+    """Canonical key for matching one membership id across the two tables:
+    cadre_performace_report stores it as varchar (so possibly zero-padded) while
+    leader_feedback stores it as an INT. Leading zeros are what differ."""
+    digits = "".join(ch for ch in str(mid) if ch.isdigit())
+    return str(int(digits)) if digits else ""
+
+
+def placeholders(values):
+    return ", ".join(["%s"] * len(values))
+
+
+# The 11 per-category POINTS columns that make up the performance half of the score.
+# Column names are the report's own, spaces and all.
+SCORE_POINT_COLUMNS = (
+    "POINTS (Pedala Sevalo)",
+    "POINTS (1st Membership)",
+    "POINTS (No of Times)",
+    "POINTS (Referrals)",
+    "POINTS (Mandal Vote Share)",
+    "POINTS (Booth Vote Share)",
+    "MANDAL/TOWN 5% POINTS",
+    "BOOTH 5% POINTS",
+    "MANDAL/TOWN 15%",
+    "BOOTH 15%",
+    "POINTS (Positions)",
+)
+
+# leader_feedback holds one q<n>_option / q<n>_points pair per question id.
+FEEDBACK_QUESTION_IDS = (16, 17, 18, 19, 20, 21, 24)
+
+FEEDBACK_QUESTIONS = None
+
+
+def feedback_questions():
+    """Labels for the feedback rows, read once. They live in members_track, a different
+    database on the same server. A failure here is cosmetic — the answers still render,
+    keyed by question id — so it must not take the whole response down with it."""
+    global FEEDBACK_QUESTIONS
+    if FEEDBACK_QUESTIONS is None:
+        ids = ", ".join(str(q) for q in FEEDBACK_QUESTION_IDS)
+        try:
+            rows = ratings_query(
+                "SELECT question_id, question_name FROM members_track.question "
+                f"WHERE question_id IN ({ids})"
+            )
+        except pymysql.Error:
+            rows = []
+        names = {row["question_id"]: row["question_name"] for row in rows}
+        FEEDBACK_QUESTIONS = [
+            {"question_id": q, "question_name": names.get(q)} for q in FEEDBACK_QUESTION_IDS
+        ]
+    return FEEDBACK_QUESTIONS
+
+
+def performance_reports(mids):
+    """{mid_key: report row}. The table's name really is spelt 'performace'."""
+    rows = ratings_query(
+        f"SELECT * FROM cadre_performace_report WHERE `MID` IN ({placeholders(mids)})",
+        tuple(mids),
+    )
+    return {mid_key(row["MID"]): jsonable(row) for row in rows if mid_key(row["MID"])}
+
+
+def leader_feedback(mids):
+    """{mid_key: {"score": n, "answers": {question_id: {option, points}}}}."""
+    columns = ["membership_id", "score"]
+    for question in FEEDBACK_QUESTION_IDS:
+        columns += [f"q{question}_option", f"q{question}_points"]
+    rows = ratings_query(
+        f"SELECT {', '.join(columns)} FROM leader_feedback "
+        f"WHERE membership_id IN ({placeholders(mids)})",
+        tuple(mids),
+    )
+    out = {}
+    for row in rows:
+        row = jsonable(row)
+        key = mid_key(row["membership_id"])
+        if not key:
+            continue
+        out[key] = {
+            "score": row["score"],
+            "answers": {
+                str(question): {
+                    "option": row[f"q{question}_option"],
+                    "points": row[f"q{question}_points"],
+                }
+                for question in FEEDBACK_QUESTION_IDS
+            },
+        }
+    return out
+
+
+def total_score(performance, feedback):
+    """Half the performance points plus half the leader-feedback points — the same Total
+    Score the membership analytics platform ranks on. None, not 0, when neither source
+    has anything, so a cadre with no ratings reads as "no score" rather than as the
+    worst candidate in the list."""
+    perf = [performance.get(column) for column in SCORE_POINT_COLUMNS] if performance else []
+    answers = [answer["points"] for answer in feedback["answers"].values()] if feedback else []
+    if not any(v is not None for v in perf) and not any(v is not None for v in answers):
+        return None
+    return sum(v for v in perf if v is not None) / 2 + sum(v for v in answers if v is not None) / 2
+
+
+@app.get("/S17getCadreScores")
+def get_cadre_scores(mids: str):
+    """Performance score, its per-category breakdown and the leader feedback behind it,
+    for one or more membership ids — one candidate card and the whole compare table are
+    the same payload, so they are the same call.
+
+    Lookup-first: a membership id whose report row already exists is served straight
+    from the table, and the rating procedures (seconds per id) run only for the rest.
+    """
+    if RATINGS_DB is None:
+        return {"configured": False, "questions": [], "candidates": []}
+
+    wanted = normalize_mids(mids.split(","))
+    if not wanted:
+        raise HTTPException(400, "mids must be a comma-separated list of membership ids")
+
+    reports = performance_reports(wanted)
+    missing = [mid for mid in wanted if mid_key(mid) not in reports]
+    if missing:
+        ratings_call("cadre_performance_update", missing)
+        ratings_call("cadre_performance_report", missing)
+        reports.update(performance_reports(missing))
+
+    feedback = leader_feedback(wanted)
+    candidates = []
+    for mid in wanted:
+        performance = reports.get(mid_key(mid))
+        answers = feedback.get(mid_key(mid))
+        candidates.append(
+            {
+                "membership_id": mid,
+                "total_score": total_score(performance, answers),
+                "performance": performance,
+                "feedback": answers,
+            }
+        )
+    return {"configured": True, "questions": feedback_questions(), "candidates": candidates}
 
 
 # `user`.Hash_Key is PBKDF2 over an MD5 digest of the credentials, as written by the
