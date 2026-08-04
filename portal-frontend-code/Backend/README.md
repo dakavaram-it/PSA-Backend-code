@@ -48,16 +48,22 @@ Every one requires a live session except `S14login` (and `/docs`, `/redoc`,
 | `GET /S8getProposalPositionsByProposalConstituencyId` | roles only — **unused**, S7 supersedes it |
 | `GET /S9getProposalConstituencyReservation` | the constituency's reservation type |
 | `GET /S10checkProposalPositionAvailability` | Available / Not Available — **unused by the frontend**, but S11 calls it internally |
-| `POST /S11assignProposalCandidate` | propose a cadre for a position. Re-checks reservation, slot count, duplicate; `409` with the reason in `detail` |
+| `POST /S11assignProposalCandidate` | propose a cadre for a position, with an optional `proposal_status_id` (1 Proposed — the default — or 2 Shortlisted). Re-checks reservation, slot count, duplicate; `409` with the reason in `detail`, `400` on an unknown status |
 | `GET /S12cadreSearch` | cadre by `MembershipId` / `MobileNo` / `Name`, each row **flagged** `eligible` `'Y'`/`'N'` |
-| `GET /S13getProposalCandidatesByProposalPositionId` | who is currently proposed for a position |
+| `GET /S13getProposalCandidatesByProposalPositionId` | who is currently proposed for a position, each row carrying its `proposal_status_id` / `proposal_status` |
+| `POST /S18removeProposalCandidate` | drop a candidate from a position — `is_active` goes to `'N'`, freeing the slot; `404` if the id is unknown or already removed |
 | `POST /S14login` | credentials → session cookie. Throttled per username |
 | `GET /S15me` | the logged-in user, or `401` |
 | `POST /S16logout` | drop the session |
 | `GET /S17getCadreScores` | `?mids=` comma-separated: total score, the report breakdown behind it, and the leader-feedback answers |
+| `GET /S19getProposalPositionsWithCandidates` | every position holding at least one active candidate, **across all constituencies** — no query parameters, on purpose; the caller filters in the browser. Carries the local body *and* its assembly, plus per-status counts |
+| `POST /S20updateProposalCandidateStatus` | move a live candidate between Proposed / Shortlisted / Confirmed. No slot or eligibility re-check — all three are counted rows; `404` if the id is unknown or removed |
 
 The numbers are this API's own scheme — they do not line up with the frontend wizard's
 visible "steps".
+
+`S11` and `S20` stamp `inserted_user_id` / `updated_user_id` from the **session**, never
+from the request body — the body has no user id field and must not grow one.
 
 ## Tests
 

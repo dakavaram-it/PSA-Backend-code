@@ -19,6 +19,19 @@ Changing a path, a column alias or a status code breaks a bundle you cannot see 
   any constituency.
 - Only `GET` and `POST` exist. Nothing is deleted; `proposal_candidate.is_active` is the
   flag every read filters on.
+- **`proposal_candidate.proposal_status_id` says which kind of row it is** — a lookup into
+  `proposal_status` (1 Proposed, 2 Shortlisted, 3 Confirmed). `S11` takes it in the body and
+  defaults it to `PROPOSED_STATUS_ID`, validating it against the table rather than a list
+  here, so a new status is a row and not a deploy. It changes no count: the slot arithmetic
+  in `S7`/`S10` is over active rows whatever their status, so a shortlisted cadre occupies a
+  `max_proposals` slot exactly as a proposed one does. Rows written before the column have
+  it NULL, which is why `S13` joins `proposal_status` with a LEFT OUTER JOIN — dropping them
+  would desync the list from `S7`'s `proposed_cnt`.
+- **`S18removeProposalCandidate` is the only write that undoes `S11`**, and it is still not a
+  delete: `is_active` goes to `'N'`, which every read filters on, so the candidate leaves
+  `S13` and `S7`'s count and their slot reopens while the row survives. `WHERE … AND
+  is_active = 'Y'` makes it idempotent — a second call affects 0 rows and answers `404`
+  rather than pretending to remove someone twice.
 
 ## Names that look like typos but aren't
 
@@ -125,6 +138,54 @@ Only one path through the frontend wizard reaches live rows:
 - Its positions: `President` (`max_proposals` 3, already full — S11 answers `409`) and
   `Vice-President` (open).
 - Reservation is `BC-GENERAL`, so only cadre with `caste_category_id = 2` can be assigned.
+
+## `S19` — the one endpoint that is not keyed by a drilled-down id
+
+Every other read here takes an id the wizard walked down to (`proposal_constituency_id`,
+`proposal_position_id`). `S19getProposalPositionsWithCandidates` takes nothing: it serves
+the frontend's Candidates screen, which lists positions **across all constituencies** and
+so has no id to key off.
+
+- The join to `proposal_candidate` is **inner** — a position nobody was proposed for has
+  nothing to show and must not appear. That is the endpoint's whole filter.
+- It returns both constituencies a position sits under: the **local body**
+  (`PCon.constituency_id`, a panchayat/ward-level `constituency` row) and the **assembly**
+  (through `PCon.address_id → user_address.constituency_id`, the way `S5`/`S6` resolve it).
+  The screen filters on the assembly while naming the local body, so dropping either
+  breaks it.
+- The per-status counts `COALESCE` a NULL `proposal_status_id` to Proposed, matching the
+  LEFT OUTER JOIN in `S13`, and are `CAST(… AS UNSIGNED)` because `SUM()` is DECIMAL in
+  MySQL and would otherwise reach the browser as a float next to `proposed_cnt`'s integer.
+- **No query parameters, deliberately.** The caller filters in the browser and derives its
+  Election Type / Assembly / Role dropdown options from these same rows — narrowing them
+  server-side would empty the dropdowns the filter was picked from.
+
+## Who wrote a row comes from the session, never the body
+
+`proposal_candidate.inserted_user_id` (written by `S11`) and `updated_user_id` (written by
+`S20`) both come from `acting_user_id(request)`, i.e. `current_user(request)["user_id"]` —
+the same identity `S14` put in `SESSIONS`. **Never accept a user id in a request body for
+these**: they are an audit trail, and a browser can put any number in a payload. Any future
+write that stamps a user follows the same route. `guard_response` has already rejected
+callers without a live session before a handler runs, so `current_user` is never `None`
+outside `PUBLIC_PATHS`, which is why there is no None check there.
+
+`S18` does **not** stamp `updated_user_id` today — it flips `is_active` and `updated_time`
+only.
+
+## `S20` — the only in-place edit of a `proposal_candidate`
+
+`S11` creates the row and `S18` deactivates it; `S20updateProposalCandidateStatus` is the
+only write that changes one that already exists, and it touches `proposal_status_id`
+alone.
+
+- **No slot or eligibility re-check.** All three statuses are live rows counted by `S7`'s
+  `proposed_cnt`, so moving between them frees nothing and consumes nothing; re-running
+  `S11`'s checks here would refuse a candidate already sitting in the slot.
+- `is_active = 'Y'` is in the WHERE — a removed candidate is on no screen to restatus.
+- MySQL reports 0 affected rows both for "no such row" and for "already that status", so
+  the handler re-checks existence before answering `404`: re-saving an unmoved status is
+  not an error the screen should show.
 
 ## Frontend contract worth keeping
 

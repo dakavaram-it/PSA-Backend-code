@@ -82,6 +82,17 @@ def insert(sql, args=None):
         conn.close()
 
 
+def update(sql, args=None):
+    conn = pymysql.connect(**DB)
+    try:
+        with conn.cursor() as cur:
+            rows = cur.execute(sql, args)
+        conn.commit()
+        return rows
+    finally:
+        conn.close()
+
+
 @app.get("/S1getProposalElectionTypes")
 def get_proposal_election_types():
     return query(
@@ -244,13 +255,30 @@ def eligibility_flag(ctx):
     return "CASE WHEN " + " AND ".join(conditions) + " THEN 'Y' ELSE 'N' END AS eligible", args
 
 
+# proposal_status is a lookup table (1 Proposed, 2 Shortlisted, 3 Confirmed), so the id is
+# checked against the table rather than against a list here — adding a status is a row, not
+# a deploy. Proposed is the default, which is what every row written before the column
+# existed means.
+PROPOSED_STATUS_ID = 1
+
+
 class AssignProposalCandidate(BaseModel):
     proposal_position_id: int
     tdp_cadre_id: int
+    proposal_status_id: int = PROPOSED_STATUS_ID
+
+
+# Who wrote a row comes from the session, never from the request body: the browser could
+# put any user_id in a payload, and `proposal_candidate.inserted_user_id` /
+# `updated_user_id` are an audit trail, so a caller must not be able to write someone
+# else's id into one. guard_response has already rejected anyone without a live session by
+# the time a handler runs, so this is never None outside PUBLIC_PATHS.
+def acting_user_id(request):
+    return current_user(request)["user_id"]
 
 
 @app.post("/S11assignProposalCandidate")
-def assign_proposal_candidate(body: AssignProposalCandidate):
+def assign_proposal_candidate(body: AssignProposalCandidate, request: Request):
     position = query(
         "SELECT PP.max_proposals, CR.reservation_type, "
         "CR.caste_category_id AS required_caste_category_id, "
@@ -266,6 +294,12 @@ def assign_proposal_candidate(body: AssignProposalCandidate):
     if not position:
         raise HTTPException(404, "Unknown proposal_position_id")
     position = position[0]
+
+    if not query(
+        "SELECT proposal_status_id FROM proposal_status WHERE proposal_status_id = %s",
+        (body.proposal_status_id,),
+    ):
+        raise HTTPException(400, "Unknown proposal_status_id")
 
     cadre = query(
         "SELECT TC.gender, CCG.caste_category_id "
@@ -309,11 +343,20 @@ def assign_proposal_candidate(body: AssignProposalCandidate):
 
     proposal_candidate_id = insert(
         "INSERT INTO proposal_candidate "
-        "(proposal_position_id, tdp_cadre_id, is_active, enrollment_id, inserted_time) "
-        "VALUES (%s, %s, 'Y', 1, NOW())",
-        (body.proposal_position_id, body.tdp_cadre_id),
+        "(proposal_position_id, tdp_cadre_id, proposal_status_id, is_active, "
+        "enrollment_id, inserted_time, inserted_user_id) "
+        "VALUES (%s, %s, %s, 'Y', 1, NOW(), %s)",
+        (
+            body.proposal_position_id,
+            body.tdp_cadre_id,
+            body.proposal_status_id,
+            acting_user_id(request),
+        ),
     )
-    return {"proposal_candidate_id": proposal_candidate_id}
+    return {
+        "proposal_candidate_id": proposal_candidate_id,
+        "proposal_status_id": body.proposal_status_id,
+    }
 
 
 CADRE_SEARCH_FILTERS = {
@@ -364,7 +407,8 @@ def cadre_search(proposal_constituency_id: int, search_type: str, search_value: 
 @app.get("/S13getProposalCandidatesByProposalPositionId")
 def get_proposal_candidates_by_proposal_position_id(proposal_position_id: int):
     return query(
-        "SELECT PC.proposal_candidate_id, TC.tdp_cadre_id, TC.membership_id, "
+        "SELECT PC.proposal_candidate_id, PC.proposal_status_id, "
+        "PS.status_name AS proposal_status, TC.tdp_cadre_id, TC.membership_id, "
         "TC.first_name AS member_name, TC.gender, TC.age, TC.relative_name, "
         "TC.relative_type, TC.mobile_no, CC.category_name, CT.caste_name, "
         "C.constituency_id, C.name AS constituency_name, "
@@ -375,6 +419,10 @@ def get_proposal_candidates_by_proposal_position_id(proposal_position_id: int):
         "THEN CONCAT('https://imagesearch-projectkv.s3.amazonaws.com/cadre_images/', TC.image) "
         "ELSE '' END AS img_url "
         "FROM proposal_candidate PC "
+        # Outer join: rows written before proposal_status_id existed have it NULL, and
+        # they are still assigned — dropping them would desync this list from S7's count.
+        "LEFT OUTER JOIN proposal_status PS "
+        "ON PC.proposal_status_id = PS.proposal_status_id "
         "JOIN tdp_cadre TC ON PC.tdp_cadre_id = TC.tdp_cadre_id "
         "JOIN user_address UA ON TC.address_id = UA.user_address_id "
         "JOIN constituency C ON UA.constituency_id = C.constituency_id "
@@ -390,6 +438,131 @@ def get_proposal_candidates_by_proposal_position_id(proposal_position_id: int):
         "WHERE PC.proposal_position_id = %s AND PC.is_active = 'Y' "
         "ORDER BY PC.proposal_candidate_id",
         (proposal_position_id,),
+    )
+
+
+class RemoveProposalCandidate(BaseModel):
+    proposal_candidate_id: int
+
+
+@app.post("/S18removeProposalCandidate")
+def remove_proposal_candidate(body: RemoveProposalCandidate):
+    """Drop a candidate from a position. `is_active` flips to 'N' rather than the row being
+    deleted — that flag is what every read here filters on, so the candidate leaves S13 and
+    S7's proposed_cnt and their slot reopens, while who was proposed and when survives."""
+    removed = update(
+        "UPDATE proposal_candidate SET is_active = 'N', updated_time = NOW() "
+        "WHERE proposal_candidate_id = %s AND is_active = 'Y'",
+        (body.proposal_candidate_id,),
+    )
+    if not removed:
+        raise HTTPException(404, "Unknown or already removed proposal_candidate_id")
+    return {"proposal_candidate_id": body.proposal_candidate_id}
+
+
+class UpdateProposalCandidateStatus(BaseModel):
+    proposal_candidate_id: int
+    proposal_status_id: int
+
+
+@app.post("/S20updateProposalCandidateStatus")
+def update_proposal_candidate_status(body: UpdateProposalCandidateStatus, request: Request):
+    """Move an already-assigned candidate between Proposed / Shortlisted / Confirmed.
+
+    The only write here that changes a `proposal_candidate` row in place: S11 creates one
+    and S18 deactivates one. It touches `proposal_status_id` alone, so the position, the
+    cadre and `S7`'s `proposed_cnt` are unaffected — every status is a live row and
+    consumes the same `max_proposals` slot, which is why no slot or eligibility re-check
+    belongs here.
+
+    `is_active = 'Y'` is part of the WHERE: a removed candidate is on no screen to
+    restatus, and letting one through would edit a row S13 never returns.
+    """
+    if not query(
+        "SELECT proposal_status_id FROM proposal_status WHERE proposal_status_id = %s",
+        (body.proposal_status_id,),
+    ):
+        raise HTTPException(400, "Unknown proposal_status_id")
+
+    changed = update(
+        "UPDATE proposal_candidate SET proposal_status_id = %s, updated_time = NOW(), "
+        "updated_user_id = %s WHERE proposal_candidate_id = %s AND is_active = 'Y'",
+        (body.proposal_status_id, acting_user_id(request), body.proposal_candidate_id),
+    )
+    if not changed:
+        # MySQL reports 0 affected rows for "no such row" and for "already that status"
+        # alike, so check the row exists before calling it unknown — re-saving a status
+        # that did not move is not an error the screen should show.
+        if not query(
+            "SELECT proposal_candidate_id FROM proposal_candidate "
+            "WHERE proposal_candidate_id = %s AND is_active = 'Y'",
+            (body.proposal_candidate_id,),
+        ):
+            raise HTTPException(404, "Unknown or removed proposal_candidate_id")
+
+    return {
+        "proposal_candidate_id": body.proposal_candidate_id,
+        "proposal_status_id": body.proposal_status_id,
+    }
+
+
+@app.get("/S19getProposalPositionsWithCandidates")
+def get_proposal_positions_with_candidates():
+    """Every proposal position that holds at least one active candidate, across every
+    constituency — the Candidates screen's list, which is not reached by drilling down
+    S1..S6 and so cannot key off one proposal_constituency_id.
+
+    The join to proposal_candidate is inner on purpose: a position nobody was proposed
+    for has nothing to show and must not appear. Both the local body (PCon.constituency_id,
+    a panchayat/ward-level constituency row) and the assembly (through the address chain,
+    the same way S5/S6 resolve it) are returned, because the screen filters on the assembly
+    while naming the local body.
+
+    No query parameters: the caller filters this list in the browser, and the same rows are
+    what populates its Role dropdown — a server-side role filter would narrow the very list
+    the options are derived from.
+    """
+    return query(
+        "SELECT PP.proposal_position_id, PP.max_positions, PP.max_proposals, "
+        "PR.proposal_role_id, PR.role_name, "
+        "PCon.proposal_consituency_id AS proposal_constituency_id, "
+        "PET.proposal_election_type_id, PET.election_type, "
+        "LB.name AS local_body_name, "
+        "AC.constituency_id AS assembly_constituency_id, AC.name AS assembly_name, "
+        "CASE WHEN T.tehsil_id IS NOT NULL THEN T.tehsil_name "
+        "ELSE CONCAT(L.name, ' Town') END AS mandal_town_name, "
+        "CR.reservation_type, "
+        "COUNT(DISTINCT PC.tdp_cadre_id) AS proposed_cnt, "
+        # Rows written before proposal_status_id existed are proposals, which is what
+        # COALESCE says here and what S13 and the card both read them back as.
+        # CAST because SUM() is DECIMAL in MySQL, which would reach the browser as a float
+        # ("2.0") next to proposed_cnt's plain integer.
+        "CAST(SUM(CASE WHEN COALESCE(PC.proposal_status_id, %s) = 1 THEN 1 ELSE 0 END) AS UNSIGNED) AS proposed_status_cnt, "
+        "CAST(SUM(CASE WHEN PC.proposal_status_id = 2 THEN 1 ELSE 0 END) AS UNSIGNED) AS shortlisted_status_cnt, "
+        "CAST(SUM(CASE WHEN PC.proposal_status_id = 3 THEN 1 ELSE 0 END) AS UNSIGNED) AS conformed_status_cnt "
+        "FROM proposal_position PP "
+        "JOIN proposal_candidate PC "
+        "ON PP.proposal_position_id = PC.proposal_position_id AND PC.is_active = 'Y' "
+        "JOIN proposal_role PR ON PP.proposal_role_id = PR.proposal_role_id "
+        "JOIN proposal_consituency PCon "
+        "ON PP.proposal_constituency_id = PCon.proposal_consituency_id "
+        "JOIN proposal_election_type PET "
+        "ON PCon.proposal_election_type_id = PET.proposal_election_type_id "
+        "JOIN constituency LB ON PCon.constituency_id = LB.constituency_id "
+        "JOIN user_address UA ON PCon.address_id = UA.user_address_id "
+        "JOIN constituency AC ON UA.constituency_id = AC.constituency_id "
+        "LEFT OUTER JOIN tehsil T ON UA.tehsil_id = T.tehsil_id "
+        "LEFT OUTER JOIN local_election_body L "
+        "ON UA.local_election_body = L.local_election_body_id "
+        "LEFT OUTER JOIN constituency_reservation CR "
+        "ON PCon.constituency_reservation_id = CR.constituency_reservation_id "
+        "GROUP BY PP.proposal_position_id, PP.max_positions, PP.max_proposals, "
+        "PR.proposal_role_id, PR.role_name, PR.order_no, "
+        "PCon.proposal_consituency_id, PET.proposal_election_type_id, PET.election_type, "
+        "LB.name, AC.constituency_id, AC.name, T.tehsil_id, T.tehsil_name, L.name, "
+        "CR.reservation_type "
+        "ORDER BY AC.name, LB.name, PR.order_no",
+        (PROPOSED_STATUS_ID,),
     )
 
 
