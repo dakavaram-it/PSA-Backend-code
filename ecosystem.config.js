@@ -7,7 +7,7 @@ module.exports = {
       // (/portal-frontend-code and /admin-dashboard) in a single ASGI app.
       name: 'psa-backend',
       script: 'python3',
-      args: '-m uvicorn gateway:app --host 0.0.0.0 --port 4000',
+      args: '-m uvicorn gateway:app --host 0.0.0.0 --port 6644',
       cwd: APP_ROOT,
       instances: 1,
       autorestart: true,

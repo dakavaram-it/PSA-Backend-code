@@ -15,7 +15,7 @@ in `/docs`.
   don't test writes against arbitrary member ids.
 - **The login gates the UI only.** `POST /api/login` checks the single operator
   account in `.env` and returns no token; every write endpoint is still open to
-  anyone who reaches port 4000. Don't widen exposure without adding real auth,
+  anyone who reaches port 6644. Don't widen exposure without adding real auth,
   and don't mistake the login screen for endpoint protection.
 - **Deletes are soft, everywhere.** Nothing in this codebase issues `DELETE
   FROM`. Grants are retired by flipping a flag and revived by flipping it back,
@@ -201,13 +201,11 @@ account has none, so an OTP field would have nothing to check.
   It reaches this backend through `/api` — either `VITE_API_BASE` pointed
   straight at it or Vite's proxy via `VITE_API_PROXY`. Changing a path or a
   response shape breaks a bundle that ships from another repository.
-- **Port 4000** is what the frontend's proxy falls back to for a local backend,
-  and what `gateway.py`, `deploy.sh` and `ecosystem.config.js` all serve on. The
-  portal backend also wants 4000 in its own standalone default — two standalone
-  runs on one host collide; the gateway avoids that by serving both from one
-  process under their prefixes (`/admin-dashboard`, `/portal-frontend-code`). A
-  frontend pointed at 4000 still reaches this backend, but through
-  `/admin-dashboard/api/...`.
+- **Port 6644** is what the frontend's proxy falls back to for a local backend,
+  and what `gateway.py`, `deploy.sh` and `ecosystem.config.js` all serve on. This
+  backend's own standalone default is still 4000 (`Backend/main.py`), so the two
+  don't collide on one host. A frontend pointed at 6644 reaches this backend
+  through `/admin-dashboard/api/...`; a standalone run serves `/api/...` bare.
 - **No reverse proxy config in this repo.** TLS and the public hostname belong to
   something in front (nginx/Caddy/ALB). A request that hangs ~15 s before failing
   is PyMySQL's `connect_timeout`, i.e. the server's outbound IP is not in the RDS

@@ -16,7 +16,7 @@ uvicorn main:app --port 8001        # standalone; /docs is this app alone
 ```
 
 Normally it runs under the repo-root gateway instead — `python gateway.py`, which mounts
-this app at `/portal-frontend-code` and merges its Swagger into `http://127.0.0.1:4000/docs`.
+this app at `/portal-frontend-code` and merges its Swagger into `http://127.0.0.1:6644/docs`.
 See `../../README.md`.
 
 ## Configuration

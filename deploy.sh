@@ -157,7 +157,7 @@ pm2 status
 
 print_success "Deployment completed successfully!"
 echo ""
-echo "Swagger UI:  http://<host>:4000/docs"
+echo "Swagger UI:  http://<host>:6644/docs"
 echo ""
 echo "Useful commands:"
 echo "  - View logs:    pm2 logs psa-backend"

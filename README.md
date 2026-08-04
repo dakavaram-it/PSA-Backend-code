@@ -14,7 +14,7 @@ so every backend still runs standalone exactly as it did before.
 
 ```bash
 pip install -r requirements.txt
-python gateway.py            # http://127.0.0.1:4000/docs
+python gateway.py            # http://127.0.0.1:6644/docs
 python gateway.py --dump     # write the merged spec to openapi.json
 python test_gateway.py       # self-check
 ```
