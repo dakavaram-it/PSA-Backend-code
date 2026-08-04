@@ -537,6 +537,147 @@
         ]
       }
     },
+    "/portal-frontend-code/S18removeProposalCandidate": {
+      "post": {
+        "summary": "[Portal (Local Body Elections)] Remove Proposal Candidate",
+        "description": "Drop a candidate from a position. `is_active` flips to 'N' rather than the row being\ndeleted \u2014 that flag is what every read here filters on, so the candidate leaves S13 and\nS7's proposed_cnt and their slot reopens, while who was proposed and when survives.",
+        "operationId": "Portal_Local_Body_Elections__remove_proposal_candidate_S18removeProposalCandidate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Portal_Local_Body_Elections__RemoveProposalCandidate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Local_Body_Elections__HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Portal (Local Body Elections) - API"
+        ]
+      }
+    },
+    "/portal-frontend-code/S20updateProposalCandidateStatus": {
+      "post": {
+        "summary": "[Portal (Local Body Elections)] Update Proposal Candidate Status",
+        "description": "Move an already-assigned candidate between Proposed / Shortlisted / Confirmed.\n\nThe only write here that changes a `proposal_candidate` row in place: S11 creates one\nand S18 deactivates one. It touches `proposal_status_id` alone, so the position, the\ncadre and `S7`'s `proposed_cnt` are unaffected \u2014 every status is a live row and\nconsumes the same `max_proposals` slot, which is why no slot or eligibility re-check\nbelongs here.\n\n`is_active = 'Y'` is part of the WHERE: a removed candidate is on no screen to\nrestatus, and letting one through would edit a row S13 never returns.",
+        "operationId": "Portal_Local_Body_Elections__update_proposal_candidate_status_S20updateProposalCandidateStatus_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Portal_Local_Body_Elections__UpdateProposalCandidateStatus"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Local_Body_Elections__HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Portal (Local Body Elections) - API"
+        ]
+      }
+    },
+    "/portal-frontend-code/S19getProposalPositionsWithCandidates": {
+      "get": {
+        "summary": "[Portal (Local Body Elections)] Get Proposal Positions With Candidates",
+        "description": "Every proposal position that holds at least one active candidate, across every\nconstituency \u2014 the Candidates screen's list, which is not reached by drilling down\nS1..S6 and so cannot key off one proposal_constituency_id.\n\nThe join to proposal_candidate is inner on purpose: a position nobody was proposed\nfor has nothing to show and must not appear. Both the local body (PCon.constituency_id,\na panchayat/ward-level constituency row) and the assembly (through the address chain,\nthe same way S5/S6 resolve it) are returned, because the screen filters on the assembly\nwhile naming the local body.\n\nNo query parameters: the caller filters this list in the browser, and the same rows are\nwhat populates its Role dropdown \u2014 a server-side role filter would narrow the very list\nthe options are derived from.",
+        "operationId": "Portal_Local_Body_Elections__get_proposal_positions_with_candidates_S19getProposalPositionsWithCandidates_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "tags": [
+          "Portal (Local Body Elections) - API"
+        ]
+      }
+    },
+    "/portal-frontend-code/S17getCadreScores": {
+      "get": {
+        "summary": "[Portal (Local Body Elections)] Get Cadre Scores",
+        "description": "Performance score, its per-category breakdown and the leader feedback behind it,\nfor one or more membership ids \u2014 one candidate card and the whole compare table are\nthe same payload, so they are the same call.\n\nLookup-first: a membership id whose report row already exists is served straight\nfrom the table, and the rating procedures (seconds per id) run only for the rest.",
+        "operationId": "Portal_Local_Body_Elections__get_cadre_scores_S17getCadreScores_get",
+        "parameters": [
+          {
+            "name": "mids",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Mids"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Local_Body_Elections__HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Portal (Local Body Elections) - API"
+        ]
+      }
+    },
     "/portal-frontend-code/S14login": {
       "post": {
         "summary": "[Portal (Local Body Elections)] Login",
@@ -1332,6 +1473,96 @@
         }
       }
     },
+    "/admin-dashboard/api/cadre/by-cadre-id/{cadre_id}": {
+      "get": {
+        "tags": [
+          "Admin Dashboard - cadre"
+        ],
+        "summary": "[Admin Dashboard] Cadre By Cadre Id",
+        "operationId": "Admin_Dashboard__cadre_by_cadre_id_api_cadre_by_cadre_id__cadre_id__get",
+        "parameters": [
+          {
+            "name": "cadre_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Cadre Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Admin_Dashboard__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin-dashboard/api/cadre/{cadre_id}": {
+      "put": {
+        "tags": [
+          "Admin Dashboard - cadre"
+        ],
+        "summary": "[Admin Dashboard] Update Cadre",
+        "operationId": "Admin_Dashboard__update_cadre_api_cadre__cadre_id__put",
+        "parameters": [
+          {
+            "name": "cadre_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Cadre Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Admin_Dashboard__CadreUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Admin_Dashboard__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/admin-dashboard/api/cadre/{mid}/access-types": {
       "get": {
         "tags": [
@@ -1462,6 +1693,11 @@
           "tdp_cadre_id": {
             "type": "integer",
             "title": "Tdp Cadre Id"
+          },
+          "proposal_status_id": {
+            "type": "integer",
+            "title": "Proposal Status Id",
+            "default": 1
           }
         },
         "type": "object",
@@ -1501,6 +1737,37 @@
           "password"
         ],
         "title": "LoginRequest"
+      },
+      "Portal_Local_Body_Elections__RemoveProposalCandidate": {
+        "properties": {
+          "proposal_candidate_id": {
+            "type": "integer",
+            "title": "Proposal Candidate Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "proposal_candidate_id"
+        ],
+        "title": "RemoveProposalCandidate"
+      },
+      "Portal_Local_Body_Elections__UpdateProposalCandidateStatus": {
+        "properties": {
+          "proposal_candidate_id": {
+            "type": "integer",
+            "title": "Proposal Candidate Id"
+          },
+          "proposal_status_id": {
+            "type": "integer",
+            "title": "Proposal Status Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "proposal_candidate_id",
+          "proposal_status_id"
+        ],
+        "title": "UpdateProposalCandidateStatus"
       },
       "Portal_Local_Body_Elections__ValidationError": {
         "properties": {
@@ -1610,6 +1877,34 @@
           "mobile_no"
         ],
         "title": "CadreCreate"
+      },
+      "Admin_Dashboard__CadreUpdate": {
+        "properties": {
+          "age": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age"
+          },
+          "gender": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gender"
+          }
+        },
+        "type": "object",
+        "title": "CadreUpdate"
       },
       "Admin_Dashboard__ComponentGrant": {
         "properties": {
