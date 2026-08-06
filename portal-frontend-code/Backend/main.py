@@ -112,6 +112,44 @@ def get_assembly_constituencies_in_a_state():
     )
 
 
+# The assemblies one user may work in — S2 narrowed to that user's grants. Three of them,
+# unioned because a user may hold more than one: a row in user_state_access_info covers
+# every assembly in the state, and a row in user_constituency_access_info is either a
+# parliament (covering the assemblies whose parliament_id points at it) or one assembly
+# itself. ES.election_type_id = 2 is what makes a constituency row an assembly rather than
+# a parliament or a local body. No grants means no assemblies, not all of them.
+def user_access_assemblies(user_id):
+    return query(
+        "SELECT C.constituency_id, C.name AS constituency_name "
+        "FROM user_state_access_info SA "
+        "JOIN constituency C ON C.state_id = SA.state_id "
+        "JOIN election_scope ES ON C.election_scope_id = ES.election_scope_id "
+        "WHERE SA.user_id = %s AND C.deform_date IS NULL AND ES.election_type_id = 2 "
+        "UNION "
+        "SELECT C.constituency_id, C.name AS constituency_name "
+        "FROM user_constituency_access_info CA "
+        "JOIN constituency C ON CA.constituency_id = C.parliament_id "
+        "JOIN election_scope ES ON C.election_scope_id = ES.election_scope_id "
+        "WHERE CA.user_id = %s AND C.deform_date IS NULL AND ES.election_type_id = 2 "
+        "UNION "
+        "SELECT C.constituency_id, C.name AS constituency_name "
+        "FROM user_constituency_access_info CA "
+        "JOIN constituency C ON CA.constituency_id = C.constituency_id "
+        "JOIN election_scope ES ON C.election_scope_id = ES.election_scope_id "
+        "WHERE CA.user_id = %s AND C.deform_date IS NULL AND ES.election_type_id = 2 "
+        "ORDER BY constituency_name",
+        (user_id, user_id, user_id),
+    )
+
+
+# The wizard's assembly picklist, replacing S2. Like every write's user id, the one that
+# scopes this comes from the session and never from a query parameter — a caller must not
+# be able to ask for someone else's assemblies.
+@app.get("/S21getUserAccessAssemblies")
+def get_user_access_assemblies(request: Request):
+    return user_access_assemblies(acting_user_id(request))
+
+
 @app.get("/S3getMandalsInAConstituency")
 def get_mandals_in_a_constituency(constituency_id: int):
     return query(
@@ -507,10 +545,15 @@ def update_proposal_candidate_status(body: UpdateProposalCandidateStatus, reques
 
 
 @app.get("/S19getProposalPositionsWithCandidates")
-def get_proposal_positions_with_candidates():
-    """Every proposal position that holds at least one active candidate, across every
-    constituency — the Candidates screen's list, which is not reached by drilling down
-    S1..S6 and so cannot key off one proposal_constituency_id.
+def get_proposal_positions_with_candidates(request: Request):
+    """Every proposal position that holds at least one active candidate, in the assemblies
+    the session's user has access to — the Candidates screen's list, which is not reached
+    by drilling down S1..S6 and so cannot key off one proposal_constituency_id.
+
+    The access filter is here rather than in the browser because it is access control: the
+    screen's own four filters are cosmetic, but this one decides what leaves the server.
+    It narrows the rows the Assembly dropdown is built from too, which is correct — an
+    option nobody can open should not be offered.
 
     The join to proposal_candidate is inner on purpose: a position nobody was proposed
     for has nothing to show and must not appear. Both the local body (PCon.constituency_id,
@@ -522,6 +565,9 @@ def get_proposal_positions_with_candidates():
     what populates its Role dropdown — a server-side role filter would narrow the very list
     the options are derived from.
     """
+    access = [row["constituency_id"] for row in user_access_assemblies(acting_user_id(request))]
+    if not access:
+        return []
     return query(
         "SELECT PP.proposal_position_id, PP.max_positions, PP.max_proposals, "
         "PR.proposal_role_id, PR.role_name, "
@@ -556,13 +602,14 @@ def get_proposal_positions_with_candidates():
         "ON UA.local_election_body = L.local_election_body_id "
         "LEFT OUTER JOIN constituency_reservation CR "
         "ON PCon.constituency_reservation_id = CR.constituency_reservation_id "
+        f"WHERE AC.constituency_id IN ({placeholders(access)}) "
         "GROUP BY PP.proposal_position_id, PP.max_positions, PP.max_proposals, "
         "PR.proposal_role_id, PR.role_name, PR.order_no, "
         "PCon.proposal_consituency_id, PET.proposal_election_type_id, PET.election_type, "
         "LB.name, AC.constituency_id, AC.name, T.tehsil_id, T.tehsil_name, L.name, "
         "CR.reservation_type "
         "ORDER BY AC.name, LB.name, PR.order_no",
-        (PROPOSED_STATUS_ID,),
+        (PROPOSED_STATUS_ID, *access),
     )
 
 
