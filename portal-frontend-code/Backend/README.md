@@ -58,6 +58,8 @@ Every one requires a live session except `S14login` (and `/docs`, `/redoc`,
 | `GET /S17getCadreScores` | `?mids=` comma-separated: total score, the report breakdown behind it, and the leader-feedback answers |
 | `GET /S19getProposalPositionsWithCandidates` | every position holding at least one active candidate, **across all constituencies** — no query parameters, on purpose; the caller filters in the browser. Carries the local body *and* its assembly, plus per-status counts |
 | `POST /S20updateProposalCandidateStatus` | move a live candidate between Proposed / Shortlisted / Confirmed. No slot or eligibility re-check — all three are counted rows; `404` if the id is unknown or removed |
+| `GET /S21getUserAccessAssemblies` | the caller's own assembly grants, scoped by session — the wizard's Assembly picklist |
+| `GET /S22getDashboardPositionsByConstituencyId` | every position under one assembly (`?constituency_id=`), across every election type and every local body — the Dashboard screen's whole picture in one call. Unlike S19 this is a `LEFT JOIN`, so a position with no candidate still appears. Each row also carries `tehsil_id`/`town_id` (S5/S6's own inputs), so a caller can jump straight to that location without re-deriving it through S3/S4 |
 
 The numbers are this API's own scheme — they do not line up with the frontend wizard's
 visible "steps".
@@ -73,6 +75,8 @@ No framework, no fixtures, no database. Plain asserts, run each directly:
 python test_auth.py          # login edge cases, session sweep, middleware order
 python test_eligibility.py   # eligibility_flag SQL — reservation only, never location
 python test_score.py         # S17 arithmetic and membership-id key matching
+python test_access.py        # user_access_assemblies union, S19's access scoping
+python test_dashboard.py     # S22 SQL shape — scoping, LEFT JOIN, returned columns
 ```
 
 `../../test_gateway.py` covers the mount-prefix behaviour these paths depend on.

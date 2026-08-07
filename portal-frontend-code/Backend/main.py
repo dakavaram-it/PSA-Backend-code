@@ -613,6 +613,65 @@ def get_proposal_positions_with_candidates(request: Request):
     )
 
 
+@app.get("/S22getDashboardPositionsByConstituencyId")
+def get_dashboard_positions_by_constituency_id(constituency_id: int):
+    """Every proposal_position under one assembly, across every election type and every
+    local body it resolves to (mandal or town) — the Dashboard screen's whole picture in
+    one call. Without this, the same data would take an S1 election types x S3/S4
+    mandals/towns x S5/S6 x S7 fan-out in the browser: one request per (election type,
+    mandal-or-town) pair just to find which locations exist, then one more per location.
+
+    LEFT OUTER JOIN to proposal_candidate, not INNER like S19: S19 must hide a position
+    nobody was proposed for, but this screen's "Not Started" is exactly that position.
+    Unscoped by the caller's own access grants (unlike S19) — S5/S6 already let any
+    constituency_id through once the frontend has drilled down to it, and by the time the
+    Dashboard calls this it has already picked the assembly off S21's own list.
+
+    Also carries `tehsil_id`/`town_id` (exactly one set per row, the other NULL) — S5/S6's
+    own inputs — so a caller that already has one of these rows can jump the wizard
+    straight to a location's Add Members search without re-deriving it through S3/S4.
+    """
+    return query(
+        "SELECT PP.proposal_position_id, PP.max_positions, PP.max_proposals, "
+        "PR.proposal_role_id, PR.role_name, "
+        "PCon.proposal_consituency_id AS proposal_constituency_id, "
+        "LB.name AS local_body_name, "
+        "PET.proposal_election_type_id, PET.election_type, "
+        "CASE WHEN T.tehsil_id IS NOT NULL THEN T.tehsil_name "
+        "ELSE CONCAT(L.name, ' Town') END AS mandal_town_name, "
+        "T.tehsil_id, L.local_election_body_id AS town_id, "
+        "COUNT(DISTINCT PC.tdp_cadre_id) AS proposed_cnt, "
+        # Unlike S19, this does NOT default a missing proposal_status_id to Proposed:
+        # S19's join to proposal_candidate is INNER so PC is never NULL there, but here
+        # it's a LEFT JOIN (on purpose, so a position with no candidate still appears),
+        # so PC.proposal_status_id is NULL both for "no candidate at all" and for a real
+        # candidate whose status was never set. Counting only an explicit 1 handles both
+        # correctly: no row, or no status, both read as not-yet-proposed here (0), never
+        # coerced to 1.
+        "CAST(SUM(CASE WHEN PC.proposal_status_id = 1 THEN 1 ELSE 0 END) AS UNSIGNED) AS proposed_status_cnt, "
+        "CAST(SUM(CASE WHEN PC.proposal_status_id = 2 THEN 1 ELSE 0 END) AS UNSIGNED) AS shortlisted_status_cnt, "
+        "CAST(SUM(CASE WHEN PC.proposal_status_id = 3 THEN 1 ELSE 0 END) AS UNSIGNED) AS conformed_status_cnt "
+        "FROM proposal_consituency PCon "
+        "JOIN user_address UA ON PCon.address_id = UA.user_address_id "
+        "JOIN proposal_election_type PET ON PCon.proposal_election_type_id = PET.proposal_election_type_id "
+        "JOIN constituency LB ON PCon.constituency_id = LB.constituency_id "
+        "LEFT OUTER JOIN tehsil T ON UA.tehsil_id = T.tehsil_id "
+        "LEFT OUTER JOIN local_election_body L ON UA.local_election_body = L.local_election_body_id "
+        "JOIN proposal_position PP ON PP.proposal_constituency_id = PCon.proposal_consituency_id "
+        "JOIN proposal_role PR ON PP.proposal_role_id = PR.proposal_role_id "
+        "LEFT OUTER JOIN proposal_candidate PC "
+        "ON PP.proposal_position_id = PC.proposal_position_id AND PC.is_active = 'Y' "
+        "WHERE UA.constituency_id = %s AND PCon.enrollment_id = 1 "
+        "GROUP BY PP.proposal_position_id, PP.max_positions, PP.max_proposals, "
+        "PR.proposal_role_id, PR.role_name, PR.order_no, "
+        "PCon.proposal_consituency_id, LB.name, "
+        "PET.proposal_election_type_id, PET.election_type, T.tehsil_id, T.tehsil_name, "
+        "L.name, L.local_election_body_id "
+        "ORDER BY PET.election_type, LB.name, PR.order_no",
+        (constituency_id,),
+    )
+
+
 def ratings_query(sql, args=None):
     conn = pymysql.connect(**RATINGS_DB)
     try:
