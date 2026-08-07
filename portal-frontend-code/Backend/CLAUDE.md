@@ -33,6 +33,32 @@ Changing a path, a column alias or a status code breaks a bundle you cannot see 
   is_active = 'Y'` makes it idempotent — a second call affects 0 rows and answers `404`
   rather than pretending to remove someone twice.
 
+## Connections are pooled — do not call `pymysql.connect` directly
+
+The database is an RDS cluster in **us-east-1** and this service runs from India: a fresh
+`pymysql.connect()` costs **~1.1s** (TCP + MySQL auth handshake) while the query it was
+opened for costs ~0.2s. This module used to open one per request, which is what made the
+gap between logging in and the first screen filling — 84% of every call was handshake,
+discarded immediately after.
+
+`query` / `insert` / `update` (and `ratings_query` / `ratings_call`) now check a connection
+out of a `LifoQueue` and hand it back. Every DB access goes through those five, so new code
+must too — a direct `pymysql.connect()` reintroduces the whole problem for that endpoint.
+
+- **Reads retry, writes ping.** `_read` runs the statement and, if a *pooled* connection
+  raises `OperationalError`/`InterfaceError`, discards it and retries once on a fresh one —
+  a connection idle past the server's `wait_timeout` is closed server-side with no notice,
+  and pinging to check on every call would cost the round trip the pool exists to remove. A
+  brand-new connection failing is a real error and is **not** retried. `_write` cannot
+  replay (a write that died mid-flight may already have been applied), so it pings a reused
+  connection up front instead, and discards any connection that failed mid-statement rather
+  than returning it to the pool.
+- `POOL_MAX` (env `DB_POOL_MAX`, default 10) caps each pool; past it a returned connection
+  is closed. Sync endpoints run in Starlette's threadpool, so concurrency is what sizes this.
+- `ratings_call` must still drain every result set before its connection goes back.
+- `test_pool.py` covers reuse, the stale-socket retry, the no-retry-on-new rule, write
+  ping/discard, and the cap.
+
 ## Names that look like typos but aren't
 
 | name | note |

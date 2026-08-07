@@ -4,6 +4,7 @@ import decimal
 import hashlib
 import hmac
 import os
+import queue
 import secrets
 import time
 from pathlib import Path
@@ -61,36 +62,115 @@ app = FastAPI(title="Local Body Elections API")
 # api.js's checkUnauthorized depends on.
 
 
-def query(sql, args=None):
-    conn = pymysql.connect(**DB)
+# The database is an RDS cluster in us-east-1 and this service runs from India, so a
+# fresh pymysql.connect() costs ~1.1s (TCP + MySQL auth handshake, several round trips)
+# while the query it was opened for costs ~0.2s. Opening one per request — which is what
+# this module used to do — made 84% of every call handshake, thrown away immediately
+# after, and that was the delay between logging in and the first screen filling.
+# Connections are pooled and reused instead, so only the first call on each pooled
+# connection pays it. Every DB access goes through query/insert/update, so this is the
+# only place that has to change.
+#
+# LifoQueue rather than FIFO: reusing the most recently returned connection keeps the
+# pool naturally small under light load and lets the idle tail age out, instead of
+# cycling every connection just often enough to keep it alive.
+POOL_MAX = int(os.environ.get("DB_POOL_MAX", "10"))
+_POOL = queue.LifoQueue()
+_RATINGS_POOL = queue.LifoQueue()
+
+
+def _discard(conn):
     try:
+        conn.close()
+    except Exception:
+        pass
+
+
+def _release(pool, conn):
+    if pool.qsize() >= POOL_MAX:
+        _discard(conn)
+    else:
+        pool.put(conn)
+
+
+def _checkout(config, pool):
+    """A pooled connection if one is free, otherwise a new one. Returns (conn, is_new)
+    so the caller can tell a stale pooled connection (worth retrying) from a brand-new
+    one that failed for a real reason (not)."""
+    try:
+        return pool.get_nowait(), False
+    except queue.Empty:
+        return pymysql.connect(**config), True
+
+
+def _read(config, pool, run):
+    """Run a read on a pooled connection, retrying once on a fresh one.
+
+    A connection idle past the server's wait_timeout is closed server-side without
+    telling us, so the first statement on it raises. Retrying costs one wasted round
+    trip in that case; pinging to check first would cost one on *every* call, which is
+    the latency this pool exists to remove. Reads only — see _write()."""
+    conn, is_new = _checkout(config, pool)
+    try:
+        result = run(conn)
+    except (pymysql.err.OperationalError, pymysql.err.InterfaceError):
+        _discard(conn)
+        if is_new:
+            raise
+        conn = pymysql.connect(**config)
+        result = run(conn)
+    _release(pool, conn)
+    return result
+
+
+def _write(config, pool, run):
+    """Same, but verifies the connection with a ping before running rather than retrying
+    after. A write that dies mid-flight may or may not have been applied server-side, so
+    replaying it could double-insert; the ping's extra round trip is the safe trade, and
+    writes are rare next to reads."""
+    conn, is_new = _checkout(config, pool)
+    if not is_new:
+        try:
+            conn.ping(reconnect=False)
+        except Exception:
+            _discard(conn)
+            conn = pymysql.connect(**config)
+    try:
+        result = run(conn)
+        conn.commit()
+    except Exception:
+        # Never return a connection that failed mid-statement to the pool: it may be
+        # holding an open transaction or an undrained result set.
+        _discard(conn)
+        raise
+    _release(pool, conn)
+    return result
+
+
+def query(sql, args=None):
+    def run(conn):
         with conn.cursor() as cur:
             cur.execute(sql, args)
             return cur.fetchall()
-    finally:
-        conn.close()
+
+    return _read(DB, _POOL, run)
 
 
 def insert(sql, args=None):
-    conn = pymysql.connect(**DB)
-    try:
+    def run(conn):
         with conn.cursor() as cur:
             cur.execute(sql, args)
-        conn.commit()
-        return cur.lastrowid
-    finally:
-        conn.close()
+            return cur.lastrowid
+
+    return _write(DB, _POOL, run)
 
 
 def update(sql, args=None):
-    conn = pymysql.connect(**DB)
-    try:
+    def run(conn):
         with conn.cursor() as cur:
-            rows = cur.execute(sql, args)
-        conn.commit()
-        return rows
-    finally:
-        conn.close()
+            return cur.execute(sql, args)
+
+    return _write(DB, _POOL, run)
 
 
 @app.get("/S1getProposalElectionTypes")
@@ -673,28 +753,26 @@ def get_dashboard_positions_by_constituency_id(constituency_id: int):
 
 
 def ratings_query(sql, args=None):
-    conn = pymysql.connect(**RATINGS_DB)
-    try:
+    def run(conn):
         with conn.cursor() as cur:
             cur.execute(sql, args)
             return cur.fetchall()
-    finally:
-        conn.close()
+
+    return _read(RATINGS_DB, _RATINGS_POOL, run)
 
 
 # The two rating procedures take one comma-separated list of membership ids and write
 # their output to cadre_performace_report; the result sets they also emit are of no use
-# here, but every one has to be drained before the connection can be reused.
+# here, but every one has to be drained before the connection can be reused. Draining is
+# what makes the connection safe to hand back to the pool at all.
 def ratings_call(procedure, mids):
-    conn = pymysql.connect(**RATINGS_DB)
-    try:
+    def run(conn):
         with conn.cursor() as cur:
             cur.execute(f"CALL {procedure}(%s)", (",".join(mids),))
             while cur.nextset():
                 pass
-        conn.commit()
-    finally:
-        conn.close()
+
+    _write(RATINGS_DB, _RATINGS_POOL, run)
 
 
 def jsonable(row):

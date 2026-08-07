@@ -77,6 +77,7 @@ python test_eligibility.py   # eligibility_flag SQL — reservation only, never 
 python test_score.py         # S17 arithmetic and membership-id key matching
 python test_access.py        # user_access_assemblies union, S19's access scoping
 python test_dashboard.py     # S22 SQL shape — scoping, LEFT JOIN, returned columns
+python test_pool.py          # connection reuse, stale-socket retry, write safety
 ```
 
 `../../test_gateway.py` covers the mount-prefix behaviour these paths depend on.
