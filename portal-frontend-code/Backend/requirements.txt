@@ -2,3 +2,5 @@ fastapi
 uvicorn
 pymysql
 python-dotenv
+boto3
+python-multipart

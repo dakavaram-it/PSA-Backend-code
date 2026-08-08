@@ -8,10 +8,13 @@ import queue
 import secrets
 import time
 from pathlib import Path
+from uuid import uuid4
 
+import boto3
 import pymysql
+from botocore.exceptions import BotoCoreError, ClientError
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -52,6 +55,19 @@ if all(os.environ.get(k) for k in ("REPORT_RATINGS_DB_HOST", "REPORT_RATINGS_DB_
         "database": os.environ.get("REPORT_RATINGS_DB_NAME", "report_ratings"),
         "cursorclass": pymysql.cursors.DictCursor,
     }
+
+# Nomination PDFs (S24) go to this bucket. Optional like RATINGS_DB: with the key pair
+# unset, S3_CLIENT stays None and S24 answers 503 rather than failing at import time, so
+# the rest of the API still comes up without S3 configured.
+S3_BUCKET = os.environ.get("S3_BUCKET", "leader-reports")
+S3_CLIENT = None
+if os.environ.get("S3_ACCESS_KEY") and os.environ.get("S3_SECRET_KEY"):
+    S3_CLIENT = boto3.client(
+        "s3",
+        aws_access_key_id=os.environ["S3_ACCESS_KEY"],
+        aws_secret_access_key=os.environ["S3_SECRET_KEY"],
+        region_name=os.environ.get("S3_REGION", "us-east-1"),
+    )
 
 app = FastAPI(title="Local Body Elections API")
 
@@ -750,6 +766,146 @@ def get_dashboard_positions_by_constituency_id(constituency_id: int):
         "ORDER BY PET.election_type, LB.name, PR.order_no",
         (constituency_id,),
     )
+
+
+@app.get("/S23getDashboardCandidatesByStatus")
+def get_dashboard_candidates_by_status(
+    constituency_id: int, proposal_election_type_id: int, proposal_status_id: int
+):
+    """The candidate list behind one Dashboard stat tile (Proposed or Confirmed): every
+    active proposal_candidate at proposal_status_id, under one assembly and election
+    type — the same (assembly, election type) scope S22's tiles are already summed over,
+    drilled down to the rows themselves rather than the count.
+
+    `nomination_file_path` is a correlated subquery over election_candidate /
+    election_candidate_file (file_type='Pdf', is_deleted not 'Y') rather than a JOIN: a
+    candidate has at most one live election_candidate row in this flow, but a JOIN would
+    still multiply the candidate row if that ever stopped being true, which would desync
+    this list's count from S22's. NULL means no PDF has been uploaded for this candidate
+    yet, which the caller reads as "nomination in progress" rather than "not confirmed".
+    `is_deleted` is checked as "not 'Y'" rather than "= 'N'" because both tables leave it
+    NULL on insert rather than defaulting it, and NULL = 'N' is NULL (never true) in SQL —
+    that comparison would hide every row nobody has explicitly soft-deleted.
+    """
+    return query(
+        "SELECT PC.proposal_candidate_id, PC.tdp_cadre_id, TC.membership_id, "
+        "TC.first_name AS member_name, TC.mobile_no, PR.role_name, "
+        "LB.name AS local_body_name, "
+        "CASE WHEN T.tehsil_id IS NOT NULL THEN T.tehsil_name "
+        "ELSE CONCAT(L.name, ' Town') END AS mandal_town_name, "
+        "(SELECT ECF.file_path FROM election_candidate EC "
+        "JOIN election_candidate_file ECF ON ECF.election_candidate_id = EC.election_candidate_id "
+        "WHERE EC.proposal_candidate_id = PC.proposal_candidate_id "
+        "AND (EC.is_deleted IS NULL OR EC.is_deleted != 'Y') "
+        "AND ECF.file_type = 'Pdf' AND (ECF.is_deleted IS NULL OR ECF.is_deleted != 'Y') "
+        "ORDER BY ECF.election_candidate_file_id DESC LIMIT 1) AS nomination_file_path "
+        "FROM proposal_candidate PC "
+        "JOIN proposal_position PP ON PC.proposal_position_id = PP.proposal_position_id "
+        "JOIN proposal_role PR ON PP.proposal_role_id = PR.proposal_role_id "
+        "JOIN proposal_consituency PCon ON PP.proposal_constituency_id = PCon.proposal_consituency_id "
+        "JOIN constituency LB ON PCon.constituency_id = LB.constituency_id "
+        "JOIN user_address UA ON PCon.address_id = UA.user_address_id "
+        "LEFT OUTER JOIN tehsil T ON UA.tehsil_id = T.tehsil_id "
+        "LEFT OUTER JOIN local_election_body L ON UA.local_election_body = L.local_election_body_id "
+        "JOIN tdp_cadre TC ON PC.tdp_cadre_id = TC.tdp_cadre_id "
+        "WHERE UA.constituency_id = %s AND PCon.proposal_election_type_id = %s "
+        "AND PC.proposal_status_id = %s AND PC.is_active = 'Y' AND PCon.enrollment_id = 1 "
+        "ORDER BY LB.name, PR.order_no, TC.first_name",
+        (constituency_id, proposal_election_type_id, proposal_status_id),
+    )
+
+
+@app.post("/S24uploadNominationFile")
+async def upload_nomination_file(
+    request: Request,
+    proposal_candidate_id: int = Form(...),
+    file: UploadFile = File(...),
+):
+    """The Confirmed-candidate upload button behind S23's nomination column: stores the
+    PDF at leader-reports/election_nominations/DDMMYY/<uuid>.pdf and records it in
+    election_candidate / election_candidate_file, which is what S23's correlated
+    subquery reads back as `nomination_file_path`.
+
+    election_candidate is reused across re-uploads (looked up by proposal_candidate_id)
+    rather than inserted every time, since it is the row that names *who* the file
+    belongs to; election_candidate_file gets a fresh row per upload instead, so a
+    re-upload does not lose the previous file's record — S23 already takes the latest by
+    id, so an old row being left behind changes nothing it reads.
+    """
+    if S3_CLIENT is None:
+        raise HTTPException(503, "File storage is not configured on the server.")
+    if file.content_type != "application/pdf":
+        raise HTTPException(400, "Only PDF files are accepted.")
+
+    candidate = query(
+        "SELECT proposal_position_id, tdp_cadre_id FROM proposal_candidate "
+        "WHERE proposal_candidate_id = %s AND is_active = 'Y'",
+        (proposal_candidate_id,),
+    )
+    if not candidate:
+        raise HTTPException(404, "Unknown or removed proposal_candidate_id")
+    candidate = candidate[0]
+
+    content = await file.read()
+    key = f"election_nominations/{datetime.datetime.now().strftime('%d%m%y')}/{uuid4()}.pdf"
+    try:
+        S3_CLIENT.put_object(Bucket=S3_BUCKET, Key=key, Body=content, ContentType="application/pdf")
+    except (BotoCoreError, ClientError) as err:
+        raise HTTPException(502, "Could not upload the file to storage.") from err
+    file_path = f"{S3_BUCKET}/{key}"
+
+    user_id = acting_user_id(request)
+    existing = query(
+        "SELECT election_candidate_id FROM election_candidate "
+        "WHERE proposal_candidate_id = %s AND (is_deleted IS NULL OR is_deleted != 'Y')",
+        (proposal_candidate_id,),
+    )
+    if existing:
+        election_candidate_id = existing[0]["election_candidate_id"]
+    else:
+        election_candidate_id = insert(
+            "INSERT INTO election_candidate "
+            "(proposal_candidate_id, proposal_position_id, tdp_cadre_id, is_deleted, "
+            "inserted_time, inserted_user_id) VALUES (%s, %s, %s, 'N', NOW(), %s)",
+            (proposal_candidate_id, candidate["proposal_position_id"], candidate["tdp_cadre_id"], user_id),
+        )
+
+    insert(
+        "INSERT INTO election_candidate_file "
+        "(election_candidate_id, file_type, file_path, is_deleted, inserted_time, inserted_user_id) "
+        "VALUES (%s, 'Pdf', %s, 'N', NOW(), %s)",
+        (election_candidate_id, file_path, user_id),
+    )
+
+    return {"proposal_candidate_id": proposal_candidate_id, "file_path": file_path}
+
+
+@app.get("/S25getNominationFileUrl")
+def get_nomination_file_url(proposal_candidate_id: int):
+    """A short-lived link to a candidate's uploaded nomination PDF, for the view icon
+    next to S23's nomination badge. leader-reports blocks all public access (checked via
+    get_public_access_block before this was built), so the file_path stored on S24's
+    write is not itself a fetchable URL — the browser needs a presigned one, generated
+    fresh per click rather than stored, so a link seen once cannot be replayed forever.
+    """
+    row = query(
+        "SELECT ECF.file_path FROM election_candidate EC "
+        "JOIN election_candidate_file ECF ON ECF.election_candidate_id = EC.election_candidate_id "
+        "WHERE EC.proposal_candidate_id = %s AND (EC.is_deleted IS NULL OR EC.is_deleted != 'Y') "
+        "AND ECF.file_type = 'Pdf' AND (ECF.is_deleted IS NULL OR ECF.is_deleted != 'Y') "
+        "ORDER BY ECF.election_candidate_file_id DESC LIMIT 1",
+        (proposal_candidate_id,),
+    )
+    if not row:
+        raise HTTPException(404, "No nomination file on record for this candidate")
+    if S3_CLIENT is None:
+        raise HTTPException(503, "File storage is not configured on the server.")
+
+    bucket, key = row[0]["file_path"].split("/", 1)
+    url = S3_CLIENT.generate_presigned_url(
+        "get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=300
+    )
+    return {"url": url}
 
 
 def ratings_query(sql, args=None):

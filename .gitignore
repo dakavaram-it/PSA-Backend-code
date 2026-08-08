@@ -4,5 +4,7 @@ venv/
 .venv/
 node_modules/
 
-# .env is intentionally NOT ignored here: this repository already tracked its
-# .env, and each project's credentials were copied in alongside its code.
+# .env files hold real credentials (DB passwords, AWS keys) and must not be
+# committed. Copy .env.example to .env locally instead.
+.env
+*/.env
