@@ -793,6 +793,11 @@ def get_dashboard_candidates_by_status(
         "LB.name AS local_body_name, "
         "CASE WHEN T.tehsil_id IS NOT NULL THEN T.tehsil_name "
         "ELSE CONCAT(L.name, ' Town') END AS mandal_town_name, "
+        # The same S3 URL S12/S13 build, so one cadre's photo is the same everywhere.
+        # '' rather than NULL when they have no image — the caller falls back to initials.
+        "CASE WHEN TC.image IS NOT NULL "
+        "THEN CONCAT('https://imagesearch-projectkv.s3.amazonaws.com/cadre_images/', TC.image) "
+        "ELSE '' END AS img_url, "
         "(SELECT ECF.file_path FROM election_candidate EC "
         "JOIN election_candidate_file ECF ON ECF.election_candidate_id = EC.election_candidate_id "
         "WHERE EC.proposal_candidate_id = PC.proposal_candidate_id "
