@@ -51,6 +51,11 @@ def login_against(rows, password=PASSWORD):
         main.query = real_query
 
 
+def request_with(cookies=None, headers=None):
+    """The two attributes current_user/session_token read off a Starlette Request."""
+    return types.SimpleNamespace(cookies=cookies or {}, headers=headers or {})
+
+
 def reset():
     main.SESSIONS.clear()
     main.LOGIN_ATTEMPTS.clear()
@@ -115,9 +120,65 @@ def test_expiry_is_idempotent():
     # Two threads can both see an expired session; the loser used to hit KeyError.
     reset()
     main.SESSIONS["tok"] = {"user": {}, "expires": time.time() - 1}
-    request = types.SimpleNamespace(cookies={main.SESSION_COOKIE: "tok"})
+    request = request_with(cookies={main.SESSION_COOKIE: "tok"})
     assert main.current_user(request) is None
     assert main.current_user(request) is None
+
+
+def test_login_returns_the_token_it_set_as_a_cookie():
+    # Header-authenticating callers have no way to read the httpOnly cookie, so the
+    # login body has to carry the same token.
+    reset()
+    user = login_against([matching_row()])
+    assert user["token"] in main.SESSIONS, user.keys()
+
+
+def test_bearer_header_authenticates():
+    reset()
+    main.SESSIONS["tok"] = {"user": {"user_id": 7}, "expires": time.time() + 60}
+    request = request_with(headers={"authorization": "Bearer tok"})
+    assert main.current_user(request) == {"user_id": 7}
+
+
+def test_bearer_beats_a_stale_cookie():
+    # Both transports present and disagreeing: the explicit header must win, or a
+    # leftover cookie would silently pin the caller to the wrong session.
+    reset()
+    main.SESSIONS["fresh"] = {"user": {"user_id": 7}, "expires": time.time() + 60}
+    main.SESSIONS["stale"] = {"user": {"user_id": 8}, "expires": time.time() + 60}
+    request = request_with(
+        cookies={main.SESSION_COOKIE: "stale"},
+        headers={"authorization": "Bearer fresh"},
+    )
+    assert main.current_user(request) == {"user_id": 7}
+
+
+def test_cookie_still_authenticates_without_a_header():
+    # The header is additive; the browser path must not have moved.
+    reset()
+    main.SESSIONS["tok"] = {"user": {"user_id": 7}, "expires": time.time() + 60}
+    assert main.current_user(request_with(cookies={main.SESSION_COOKIE: "tok"})) == {
+        "user_id": 7
+    }
+
+
+def test_malformed_authorization_headers_fall_through():
+    reset()
+    main.SESSIONS["tok"] = {"user": {"user_id": 7}, "expires": time.time() + 60}
+    for header in ("", "Bearer", "Bearer   ", "Basic tok", "tok"):
+        request = request_with(
+            cookies={main.SESSION_COOKIE: "tok"}, headers={"authorization": header}
+        )
+        # Nothing usable in the header, so the cookie is what answers.
+        assert main.current_user(request) == {"user_id": 7}, header
+        assert main.current_user(request_with(headers={"authorization": header})) is None
+
+
+def test_logout_drops_a_header_session():
+    reset()
+    main.SESSIONS["tok"] = {"user": {"user_id": 7}, "expires": time.time() + 60}
+    main.logout(request_with(headers={"authorization": "Bearer tok"}), Response())
+    assert "tok" not in main.SESSIONS
 
 
 def test_cors_wraps_the_auth_guard():

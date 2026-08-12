@@ -1143,8 +1143,22 @@ SESSIONS = {}
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").lower() == "true"
 
 
+# The same token travels two ways: the httpOnly cookie above, and `Authorization:
+# Bearer <token>` for callers with no cookie jar to lean on (a frontend served from
+# another origin, a mobile client, a script). It is one session either way — the
+# SESSIONS entry, its TTL and its logout are shared — so nothing downstream needs to
+# know which transport a request arrived on.
+def session_token(request):
+    # Bearer wins: a caller that sends one chose that transport explicitly, and a stale
+    # cookie left in the same browser must not shadow it.
+    scheme, _, value = (request.headers.get("authorization") or "").partition(" ")
+    if scheme.lower() == "bearer" and value.strip():
+        return value.strip()
+    return request.cookies.get(SESSION_COOKIE)
+
+
 def current_user(request):
-    token = request.cookies.get(SESSION_COOKIE)
+    token = session_token(request)
     session = SESSIONS.get(token) if token else None
     if not session:
         return None
@@ -1279,7 +1293,10 @@ def login(body: LoginRequest, response: Response):
                 secure=COOKIE_SECURE,
                 path="/",
             )
-            return user
+            # The cookie is still the browser's own transport; this copy is for callers
+            # that authenticate by header instead. Same token, same session — a client
+            # that ignores it loses nothing.
+            return {**user, "token": token}
 
     LOGIN_ATTEMPTS.setdefault(body.username, []).append(time.time())
     # One message for both cases, so it does not reveal which usernames exist.
@@ -1294,7 +1311,9 @@ def me(request: Request):
 
 @app.post("/S16logout")
 def logout(request: Request, response: Response):
-    SESSIONS.pop(request.cookies.get(SESSION_COOKIE), None)
+    # Drop the session whichever way it was presented, then clear the cookie regardless
+    # — a header-authenticated caller may still be carrying one from an earlier login.
+    SESSIONS.pop(session_token(request), None)
     response.delete_cookie(SESSION_COOKIE, path="/")
     return {"ok": True}
 

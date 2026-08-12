@@ -88,6 +88,14 @@ raw-bytes salt — every existing row would stop matching.
   table is not enumerable by timing despite the identical `401`.
 - The throttle is **per username, not per IP**: dev and preview both proxy through Vite, so
   every request arrives from `127.0.0.1` and an IP bucket would throttle all users at once.
+- **One session, two transports.** `S14login` sets the httpOnly `lbe_session` cookie *and*
+  returns the same token in its body as `token`; `session_token(request)` reads
+  `Authorization: Bearer <token>` first and falls back to the cookie, so `current_user`,
+  the guard and `S16logout` never care which arrived. Bearer wins on purpose — a caller
+  that sends one chose it, and a stale cookie in the same browser must not shadow it.
+  Nothing else changes: one `SESSIONS` entry, one TTL, one logout. The cookie stays the
+  browser's primary path because it is the only one an XSS cannot read; the header exists
+  for callers with no cookie jar (another origin, a mobile client, a script).
 - `SESSIONS` and `LOGIN_ATTEMPTS` are process dicts and neither is self-cleaning;
   `sweep_expired` runs on the login path. Sessions do not survive a restart — with
   `--reload`, that means every code edit.
