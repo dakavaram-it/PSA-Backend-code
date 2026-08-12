@@ -5,6 +5,7 @@ mounted under a prefix named after the project:
 
     /portal-frontend-code/...   portal-frontend-code/Backend         (FastAPI)
     /admin-dashboard/...        admin-dashboard/Backend              (FastAPI)
+    /portal-dashboard/...       portal-dashboard/Backend             (FastAPI)
 
 Mounting (rather than merging routers into one app) is deliberate: each backend
 keeps its own middleware stack. The portal's session guard and the per-project
@@ -106,25 +107,52 @@ def _load_portal() -> FastAPI:
     return _load_module("portal_backend_main", base / "Backend" / "main.py").app
 
 
-def _load_admin() -> FastAPI:
-    base = ROOT / "admin-dashboard"
-    # override=True because admin's own config.py load_dotenv() will not replace
-    # variables the portal's .env already put in os.environ — without it the admin
-    # backend silently inherits the portal's DB credentials.
+def _load_flat_backend(alias: str, dir_name: str) -> FastAPI:
+    """Load a flat, package-less Backend/ tree ("from config import ...").
+
+    Such a tree only resolves with its own Backend/ on sys.path — normally the
+    working directory it is started from. More than one project is laid out this
+    way, and they all define the SAME top-level names (config, db, queries,
+    schemas, services, routers). Whatever the previously loaded one left in
+    sys.modules would satisfy this one's imports, so a later backend would
+    silently run on an earlier project's queries and DB credentials. Those names
+    are therefore cleared before each load, and this project's directory goes on
+    the front of sys.path. Already-built apps are unaffected: they hold their
+    modules by reference, and nothing here imports at request time.
+
+    override=True on the .env because a backend's own config.py load_dotenv()
+    will not replace variables an earlier project's .env already put in
+    os.environ — without it this backend inherits the previous one's credentials.
+    """
+    base = ROOT / dir_name
     load_dotenv(base / ".env", override=True)
-    # admin's Backend/ is a flat, package-less tree ("from config import ...",
-    # "from routers import ..."), which only resolves with Backend/ on sys.path —
-    # normally the working directory it is started from.
-    sys.path.insert(0, str(base / "Backend"))
-    return _load_module("admin_backend_main", base / "Backend" / "main.py").app
+    backend = base / "Backend"
+    owned = {p.stem for p in backend.iterdir() if p.suffix == ".py" or p.is_dir()}
+    for name in [n for n in sys.modules if n.split(".")[0] in owned]:
+        del sys.modules[name]
+    sys.path.insert(0, str(backend))
+    try:
+        return _load_module(alias, backend / "main.py").app
+    finally:
+        sys.path.remove(str(backend))
 
 
-# Order matters: portal and admin both read DB_HOST/DB_USER/... out of the
-# environment at import time, but point at different databases. Each is loaded
-# straight after its own .env, so it snapshots its own credentials.
+def _load_admin() -> FastAPI:
+    return _load_flat_backend("admin_backend_main", "admin-dashboard")
+
+
+def _load_portal_dashboard() -> FastAPI:
+    return _load_flat_backend("portal_dashboard_backend_main", "portal-dashboard")
+
+
+# Order matters: every backend reads DB_HOST/DB_USER/... out of the environment
+# at import time, but they point at different databases (and, for admin and
+# portal-dashboard, at different tables in the same one). Each is loaded straight
+# after its own .env, so it snapshots its own credentials.
 PROJECTS = [
     ("Portal (Local Body Elections)", "/portal-frontend-code", _load_portal),
     ("Admin Dashboard", "/admin-dashboard", _load_admin),
+    ("Portal Dashboard", "/portal-dashboard", _load_portal_dashboard),
 ]
 
 gateway = FastAPI(

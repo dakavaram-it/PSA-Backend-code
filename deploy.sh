@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # PSA Backend Deployment Script
-# Deploys gateway.py (portal + admin-dashboard FastAPI backends) via PM2
+# Deploys gateway.py (portal, admin-dashboard and portal-dashboard FastAPI
+# backends) via PM2
 
 set -e
 
@@ -23,6 +24,14 @@ fi
 
 if [ ! -f admin-dashboard/.env ]; then
     print_error "admin-dashboard/.env not found. Create one based on admin-dashboard/.env.example"
+    exit 1
+fi
+
+# Every backend reads DB_HOST/DB_USER out of the environment at import time, so a
+# missing .env is not a lazy failure — gateway.py raises KeyError before the
+# first request and PM2 restart-loops.
+if [ ! -f portal-dashboard/.env ]; then
+    print_error "portal-dashboard/.env not found. Create one based on portal-dashboard/.env.example"
     exit 1
 fi
 
