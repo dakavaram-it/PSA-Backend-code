@@ -117,17 +117,25 @@ raw-bytes salt — every existing row would stop matching.
 
 ## Eligibility
 
-**Reservation alone — location is not part of it.** A cadre's `user_address` no longer has
-to match the proposal constituency's chain (assembly → mandal → panchayat/town), so cadre
-from anywhere may be proposed. What is checked is `constituency_reservation`:
-`caste_category_id` when set, `gender = 'F'` when set. A cadre with no caste category on
-record compares NULL and so is ineligible.
+**The assembly, then the reservation.** A cadre's `user_address.constituency_id` must equal
+the proposal constituency's own (`proposal_consituency.address_id` → `user_address`), so
+only cadre from that assembly may be proposed — but nothing below it is checked, so any
+mandal, panchayat or town inside the assembly is fine. `proposal_context()` returns that
+assembly as `assembly_constituency_id` beside the reservation. The reservation itself is
+`constituency_reservation`: `caste_category_id` when set, `gender = 'F'` when set. A cadre
+with no caste category on record compares NULL and so is ineligible.
 
 **`eligibility_flag()` returns a SELECT expression, not a WHERE clause** — `… AS eligible`,
 `'Y'`/`'N'`. cadreSearch therefore returns every cadre the search matched, ineligible ones
-included. That is deliberate: it lets the frontend say "no cadre has that membership id"
-and "that cadre is barred by the reservation" differently instead of showing one blank
-result. Only `eligible = 'Y'` rows can be staged there.
+included. That is deliberate: it lets the frontend say
+"no cadre has that membership id" and "that cadre is barred by the reservation" differently
+instead of showing one blank result. Only `eligible = 'Y'` rows can be staged there.
+
+**The assembly is the other half, and it is a second flag** — `… AS in_assembly`, `'Y'`/`'N'`,
+from `UA.constituency_id = %s` with the id `proposal_context()` returned. Flagged rather
+than filtered for the same reason the reservation is: the row has to come back for the
+frontend to say "that id belongs to another assembly" instead of "no cadre found". Only
+rows with both flags `'Y'` can be staged.
 
 `assignProposalCandidate` re-checks the same rules on write and answers `409` naming the reservation type in
 `detail`, which is the text the frontend's error banner shows. Change eligibility in

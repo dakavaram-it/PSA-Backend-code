@@ -1,13 +1,16 @@
-"""Self-check for eligibility_flag. No DB, no test framework:
+"""Self-check for eligibility_flag and the assembly scope. No DB, no test framework:
 
     cd Backend && python test_eligibility.py
 
-Location is no longer part of eligibility: the expression must never mention the
-address columns, however the proposal constituency's own address is populated.
-Reservation (caste category, gender) must still decide the flag.
+eligibility_flag is the reservation alone (caste category, gender) — it must never mention
+the address columns. The assembly is carried separately, as cadre_search's own
+`in_assembly` flag and a re-check in assign_proposal_candidate, so a cadre from another
+assembly is named as such by the search and cannot be assigned even if one is asked for
+directly.
 """
 
 import main
+from fastapi import HTTPException
 
 ADDRESS_COLUMNS = ("constituency_id", "tehsil_id", "panchayat_id", "local_election_body")
 
@@ -56,8 +59,77 @@ def check():
         assert sql.endswith(" AS eligible"), sql
         assert sql.count("%s") == len(args), sql
 
-    print("ok")
+
+def capture(responses):
+    """Swap main.query for a recorder answering each call from `responses` in order."""
+    calls = []
+
+    def fake_query(sql, args=None):
+        calls.append((sql, args))
+        return responses[len(calls) - 1] if len(calls) <= len(responses) else []
+
+    main.query = fake_query
+    return calls
+
+
+def context_row(assembly=181, caste=2):
+    return {
+        "reservation_type": "BC-GENERAL" if caste else None,
+        "required_caste_category_id": caste,
+        "required_gender": None,
+        "assembly_constituency_id": assembly,
+    }
+
+
+def check_search_flags_the_assembly():
+    real_query = main.query
+    try:
+        calls = capture([[context_row()]])
+        main.cadre_search(1, "MembershipId", "12345678")
+        ctx_sql, ctx_args = calls[0]
+        sql, args = calls[1]
+
+        # The proposal constituency's own assembly is what the search is scoped to, so
+        # it has to come back with the reservation.
+        assert "UA.constituency_id AS assembly_constituency_id" in ctx_sql, ctx_sql
+        assert ctx_args == (1,), ctx_args
+
+        # A flag, not a WHERE: the row has to come back so the frontend can say the id
+        # belongs to another assembly instead of showing "no cadre found".
+        assert (
+            "CASE WHEN UA.constituency_id = %s THEN 'Y' ELSE 'N' END AS in_assembly" in sql
+        ), sql
+        assert sql.index("AS in_assembly") < sql.index("WHERE"), sql
+        assert "UA.constituency_id = %s AND" not in sql, sql
+        # SELECT expression args first (reservation, then assembly), then the search value.
+        assert args == (2, 181, "12345678"), args
+        assert sql.count("%s") == len(args), sql
+    finally:
+        main.query = real_query
+
+
+def check_assign_refuses_another_assembly():
+    real_query = main.query
+    try:
+        capture([
+            [{**context_row(caste=None), "max_proposals": 3}],
+            [{"proposal_status_id": 1}],
+            [{"gender": "M", "caste_category_id": 2, "assembly_constituency_id": 999}],
+        ])
+        body = main.AssignProposalCandidate(proposal_position_id=1, tdp_cadre_id=2)
+        try:
+            main.assign_proposal_candidate(body, None)
+        except HTTPException as err:
+            assert err.status_code == 409, err.status_code
+            assert "assembly" in err.detail, err.detail
+        else:
+            raise AssertionError("assign accepted a cadre from another assembly")
+    finally:
+        main.query = real_query
 
 
 if __name__ == "__main__":
     check()
+    check_search_flags_the_assembly()
+    check_assign_refuses_another_assembly()
+    print("ok")

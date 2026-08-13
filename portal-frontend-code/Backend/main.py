@@ -354,14 +354,16 @@ def check_proposal_position_availability(proposal_position_id: int):
     )
 
 
-# A proposal constituency's reservation. Eligibility is the reservation alone — a
-# cadre's own address no longer has to match the constituency's chain (assembly ->
-# mandal -> panchayat/town), so cadre from anywhere may be proposed.
+# A proposal constituency's reservation, plus the assembly it sits in. The assembly is
+# the only part of its address chain that scopes who may be proposed: a cadre has to be
+# from the same assembly constituency, but not from the same mandal or panchayat.
+# Reservation (caste category, gender) is the rest of eligibility.
 def proposal_context(proposal_constituency_id):
     rows = query(
         "SELECT CR.reservation_type, CR.caste_category_id AS required_caste_category_id, "
-        "CR.gender AS required_gender "
+        "CR.gender AS required_gender, UA.constituency_id AS assembly_constituency_id "
         "FROM proposal_consituency PC "
+        "JOIN user_address UA ON PC.address_id = UA.user_address_id "
         "LEFT OUTER JOIN constituency_reservation CR "
         "ON PC.constituency_reservation_id = CR.constituency_reservation_id "
         "WHERE PC.proposal_consituency_id = %s",
@@ -416,10 +418,12 @@ def assign_proposal_candidate(body: AssignProposalCandidate, request: Request):
     position = query(
         "SELECT PP.max_proposals, CR.reservation_type, "
         "CR.caste_category_id AS required_caste_category_id, "
-        "CR.gender AS required_gender "
+        "CR.gender AS required_gender, "
+        "PUA.constituency_id AS assembly_constituency_id "
         "FROM proposal_position PP "
         "JOIN proposal_consituency PCon "
         "ON PP.proposal_constituency_id = PCon.proposal_consituency_id "
+        "JOIN user_address PUA ON PCon.address_id = PUA.user_address_id "
         "LEFT OUTER JOIN constituency_reservation CR "
         "ON PCon.constituency_reservation_id = CR.constituency_reservation_id "
         "WHERE PP.proposal_position_id = %s",
@@ -436,8 +440,10 @@ def assign_proposal_candidate(body: AssignProposalCandidate, request: Request):
         raise HTTPException(400, "Unknown proposal_status_id")
 
     cadre = query(
-        "SELECT TC.gender, CCG.caste_category_id "
+        "SELECT TC.gender, CCG.caste_category_id, "
+        "UA.constituency_id AS assembly_constituency_id "
         "FROM tdp_cadre TC "
+        "JOIN user_address UA ON TC.address_id = UA.user_address_id "
         "LEFT OUTER JOIN caste_state CS ON TC.caste_state_id = CS.caste_state_id "
         "LEFT OUTER JOIN caste_category_group CCG "
         "ON CS.caste_category_group_id = CCG.caste_category_group_id "
@@ -447,6 +453,14 @@ def assign_proposal_candidate(body: AssignProposalCandidate, request: Request):
     if not cadre:
         raise HTTPException(404, "Unknown tdp_cadre_id")
     cadre = cadre[0]
+
+    # The same assembly scope /cadreSearch filters on. Re-checked here because the search
+    # filter is only what the browser was shown: this is the write, so it is where the
+    # rule has to hold.
+    if cadre["assembly_constituency_id"] != position["assembly_constituency_id"]:
+        raise HTTPException(
+            409, "Cadre belongs to a different assembly constituency"
+        )
 
     # required_caste_category_id / required_gender are NULL when the proposal
     # constituency has no reservation, which means anyone is eligible.
@@ -506,12 +520,16 @@ def cadre_search(proposal_constituency_id: int, search_type: str, search_value: 
             400, "search_type must be one of MembershipId, MobileNo, Name"
         )
     value = f"%{search_value}%" if search_type == "Name" else search_value
-    eligible_sql, eligible_args = eligibility_flag(
-        proposal_context(proposal_constituency_id)
-    )
+    ctx = proposal_context(proposal_constituency_id)
+    eligible_sql, eligible_args = eligibility_flag(ctx)
 
     return query(
         "SELECT " + eligible_sql + ", "
+        # Flagged, not filtered, for the same reason the reservation is: a cadre the
+        # search matched in another assembly must read as "that id belongs to another
+        # assembly", not as "no such id". Only rows with both flags 'Y' can be staged,
+        # and assignProposalCandidate refuses the rest on write.
+        "CASE WHEN UA.constituency_id = %s THEN 'Y' ELSE 'N' END AS in_assembly, "
         "TC.tdp_cadre_id, TC.membership_id, TC.first_name AS member_name, "
         "TC.gender, TC.age, TC.relative_name, TC.relative_type, TC.mobile_no, "
         "CC.category_name, CT.caste_name, C.constituency_id, C.name AS constituency_name, "
@@ -534,7 +552,7 @@ def cadre_search(proposal_constituency_id: int, search_type: str, search_value: 
         "LEFT OUTER JOIN caste_category CC ON CCG.caste_category_id = CC.caste_category_id "
         "LEFT OUTER JOIN voter V ON TC.voter_id = V.voter_id "
         "WHERE TC.is_deleted = 'N' AND " + CADRE_SEARCH_FILTERS[search_type],
-        (*eligible_args, value),
+        (*eligible_args, ctx["assembly_constituency_id"], value),
     )
 
 
