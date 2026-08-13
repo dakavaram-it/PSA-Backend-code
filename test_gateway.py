@@ -7,6 +7,7 @@ being bypassed by the mount.
 
 import json
 import re
+import sys
 from urllib.parse import urlsplit
 
 from fastapi.testclient import TestClient
@@ -49,24 +50,33 @@ def test_schema_refs_all_resolve_after_namespacing():
 
 
 def test_portal_auth_guard_survives_the_mount():
+    # Paths come from the portal itself rather than being spelled out here: the
+    # routes have been renamed once already (/S14login -> /login), and a hard-coded
+    # copy of a name only fails long after the rename.
+    name = "Portal (Local Body Elections)"
+    prefix = PREFIXES[name]
+    portal_app = next(app for n, _p, app in gateway.MOUNTED if n == name)
+    public = sys.modules["portal_backend_main"].PUBLIC_PATHS
     client = TestClient(gateway.gateway)
-    portal = PREFIXES["Portal (Local Body Elections)"]
 
-    guarded = client.get(f"{portal}/S15me")
-    assert guarded.status_code == 401, "portal endpoint served without a session"
-    assert guarded.json()["detail"] == "Not authenticated"
-
-    # /S14login is in the portal's PUBLIC_PATHS allowlist. It must reach the handler
-    # rather than the guard, otherwise nobody can log in through the gateway. The
-    # handler needs the database, so a connection error still proves it got past the
-    # guard; only "Not authenticated" means the allowlist stopped matching.
-    try:
-        login = client.post(f"{portal}/S14login", json={"username": "x", "password": "y"})
-    except Exception:
-        return
-    assert login.json().get("detail") != "Not authenticated", (
-        "the login endpoint is behind the auth guard after mounting"
+    guarded = next(
+        r.path
+        for r in portal_app.routes
+        if "GET" in getattr(r, "methods", ()) and r.path not in public
     )
+    response = client.get(f"{prefix}{guarded}")
+    assert response.status_code == 401, f"{guarded} served without a session"
+    assert response.json()["detail"] == "Not authenticated"
+
+    # Everything in PUBLIC_PATHS (login above all) must reach the router rather than
+    # the guard, otherwise nobody can log in through the gateway. A GET on the
+    # POST-only login answers 405 from the router, which is proof enough it got past
+    # the guard - and needs no database.
+    for path in sorted(public):
+        allowed = client.get(f"{prefix}{path}")
+        assert allowed.status_code != 401, (
+            f"{path} is behind the auth guard after mounting"
+        )
 
 
 def test_redirects_keep_the_project_prefix():

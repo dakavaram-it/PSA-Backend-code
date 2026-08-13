@@ -46,7 +46,7 @@ class StripPrefix:
 
     Starlette's Mount leaves scope["path"] fully qualified and strips the prefix
     only during route matching, so a mounted app that inspects request.url.path
-    itself sees "/portal-frontend-code/S14login" instead of "/S14login". The
+    itself sees "/portal-frontend-code/login" instead of "/login". The
     portal's auth middleware does exactly that (its PUBLIC_PATHS allowlist is how
     login stays reachable), so the prefix is removed here and each backend sees
     the same paths it sees when run on its own.

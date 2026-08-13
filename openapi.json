@@ -6,10 +6,10 @@
     "description": "Every endpoint of every project backend in this repository. Operations are tagged and prefixed with the project they belong to."
   },
   "paths": {
-    "/portal-frontend-code/S1getProposalElectionTypes": {
+    "/portal-frontend-code/getProposalElectionTypes": {
       "get": {
         "summary": "[Portal (Local Body Elections)] Get Proposal Election Types",
-        "operationId": "Portal_Local_Body_Elections__get_proposal_election_types_S1getProposalElectionTypes_get",
+        "operationId": "Portal_Local_Body_Elections__get_proposal_election_types_getProposalElectionTypes_get",
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -25,10 +25,10 @@
         ]
       }
     },
-    "/portal-frontend-code/S2getAssemblyConstituenciesInAState": {
+    "/portal-frontend-code/getAssemblyConstituenciesInAState": {
       "get": {
         "summary": "[Portal (Local Body Elections)] Get Assembly Constituencies In A State",
-        "operationId": "Portal_Local_Body_Elections__get_assembly_constituencies_in_a_state_S2getAssemblyConstituenciesInAState_get",
+        "operationId": "Portal_Local_Body_Elections__get_assembly_constituencies_in_a_state_getAssemblyConstituenciesInAState_get",
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -44,10 +44,29 @@
         ]
       }
     },
-    "/portal-frontend-code/S3getMandalsInAConstituency": {
+    "/portal-frontend-code/getUserAccessAssemblies": {
+      "get": {
+        "summary": "[Portal (Local Body Elections)] Get User Access Assemblies",
+        "operationId": "Portal_Local_Body_Elections__get_user_access_assemblies_getUserAccessAssemblies_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "tags": [
+          "Portal (Local Body Elections) - API"
+        ]
+      }
+    },
+    "/portal-frontend-code/getMandalsInAConstituency": {
       "get": {
         "summary": "[Portal (Local Body Elections)] Get Mandals In A Constituency",
-        "operationId": "Portal_Local_Body_Elections__get_mandals_in_a_constituency_S3getMandalsInAConstituency_get",
+        "operationId": "Portal_Local_Body_Elections__get_mandals_in_a_constituency_getMandalsInAConstituency_get",
         "parameters": [
           {
             "name": "constituency_id",
@@ -84,10 +103,10 @@
         ]
       }
     },
-    "/portal-frontend-code/S4getTownsInAConstituency": {
+    "/portal-frontend-code/getTownsInAConstituency": {
       "get": {
         "summary": "[Portal (Local Body Elections)] Get Towns In A Constituency",
-        "operationId": "Portal_Local_Body_Elections__get_towns_in_a_constituency_S4getTownsInAConstituency_get",
+        "operationId": "Portal_Local_Body_Elections__get_towns_in_a_constituency_getTownsInAConstituency_get",
         "parameters": [
           {
             "name": "constituency_id",
@@ -124,10 +143,10 @@
         ]
       }
     },
-    "/portal-frontend-code/S5getProposalConstituenciesByTehsilId": {
+    "/portal-frontend-code/getProposalConstituenciesByTehsilId": {
       "get": {
         "summary": "[Portal (Local Body Elections)] Get Proposal Constituencies By Tehsil Id",
-        "operationId": "Portal_Local_Body_Elections__get_proposal_constituencies_by_tehsil_id_S5getProposalConstituenciesByTehsilId_get",
+        "operationId": "Portal_Local_Body_Elections__get_proposal_constituencies_by_tehsil_id_getProposalConstituenciesByTehsilId_get",
         "parameters": [
           {
             "name": "constituency_id",
@@ -182,10 +201,10 @@
         ]
       }
     },
-    "/portal-frontend-code/S6getProposalConstituenciesByTownId": {
+    "/portal-frontend-code/getProposalConstituenciesByTownId": {
       "get": {
         "summary": "[Portal (Local Body Elections)] Get Proposal Constituencies By Town Id",
-        "operationId": "Portal_Local_Body_Elections__get_proposal_constituencies_by_town_id_S6getProposalConstituenciesByTownId_get",
+        "operationId": "Portal_Local_Body_Elections__get_proposal_constituencies_by_town_id_getProposalConstituenciesByTownId_get",
         "parameters": [
           {
             "name": "constituency_id",
@@ -240,10 +259,10 @@
         ]
       }
     },
-    "/portal-frontend-code/S7getProposalPositionsOverviewByProposalConstituencyId": {
+    "/portal-frontend-code/getProposalPositionsOverviewByProposalConstituencyId": {
       "get": {
         "summary": "[Portal (Local Body Elections)] Get Proposal Positions Overview By Proposal Constituency Id",
-        "operationId": "Portal_Local_Body_Elections__get_proposal_positions_overview_by_proposal_constituency_id_S7getProposalPositionsOverviewByProposalConstituencyId_get",
+        "operationId": "Portal_Local_Body_Elections__get_proposal_positions_overview_by_proposal_constituency_id_getProposalPositionsOverviewByProposalConstituencyId_get",
         "parameters": [
           {
             "name": "proposal_constituency_id",
@@ -280,10 +299,10 @@
         ]
       }
     },
-    "/portal-frontend-code/S8getProposalPositionsByProposalConstituencyId": {
+    "/portal-frontend-code/getProposalPositionsByProposalConstituencyId": {
       "get": {
         "summary": "[Portal (Local Body Elections)] Get Proposal Positions By Proposal Constituency Id",
-        "operationId": "Portal_Local_Body_Elections__get_proposal_positions_by_proposal_constituency_id_S8getProposalPositionsByProposalConstituencyId_get",
+        "operationId": "Portal_Local_Body_Elections__get_proposal_positions_by_proposal_constituency_id_getProposalPositionsByProposalConstituencyId_get",
         "parameters": [
           {
             "name": "proposal_constituency_id",
@@ -320,10 +339,10 @@
         ]
       }
     },
-    "/portal-frontend-code/S9getProposalConstituencyReservation": {
+    "/portal-frontend-code/getProposalConstituencyReservation": {
       "get": {
         "summary": "[Portal (Local Body Elections)] Get Proposal Constituency Reservation",
-        "operationId": "Portal_Local_Body_Elections__get_proposal_constituency_reservation_S9getProposalConstituencyReservation_get",
+        "operationId": "Portal_Local_Body_Elections__get_proposal_constituency_reservation_getProposalConstituencyReservation_get",
         "parameters": [
           {
             "name": "proposal_constituency_id",
@@ -360,10 +379,10 @@
         ]
       }
     },
-    "/portal-frontend-code/S10checkProposalPositionAvailability": {
+    "/portal-frontend-code/checkProposalPositionAvailability": {
       "get": {
         "summary": "[Portal (Local Body Elections)] Check Proposal Position Availability",
-        "operationId": "Portal_Local_Body_Elections__check_proposal_position_availability_S10checkProposalPositionAvailability_get",
+        "operationId": "Portal_Local_Body_Elections__check_proposal_position_availability_checkProposalPositionAvailability_get",
         "parameters": [
           {
             "name": "proposal_position_id",
@@ -400,10 +419,10 @@
         ]
       }
     },
-    "/portal-frontend-code/S11assignProposalCandidate": {
+    "/portal-frontend-code/assignProposalCandidate": {
       "post": {
         "summary": "[Portal (Local Body Elections)] Assign Proposal Candidate",
-        "operationId": "Portal_Local_Body_Elections__assign_proposal_candidate_S11assignProposalCandidate_post",
+        "operationId": "Portal_Local_Body_Elections__assign_proposal_candidate_assignProposalCandidate_post",
         "requestBody": {
           "content": {
             "application/json": {
@@ -439,10 +458,10 @@
         ]
       }
     },
-    "/portal-frontend-code/S12cadreSearch": {
+    "/portal-frontend-code/cadreSearch": {
       "get": {
         "summary": "[Portal (Local Body Elections)] Cadre Search",
-        "operationId": "Portal_Local_Body_Elections__cadre_search_S12cadreSearch_get",
+        "operationId": "Portal_Local_Body_Elections__cadre_search_cadreSearch_get",
         "parameters": [
           {
             "name": "proposal_constituency_id",
@@ -497,10 +516,10 @@
         ]
       }
     },
-    "/portal-frontend-code/S13getProposalCandidatesByProposalPositionId": {
+    "/portal-frontend-code/getProposalCandidatesByProposalPositionId": {
       "get": {
         "summary": "[Portal (Local Body Elections)] Get Proposal Candidates By Proposal Position Id",
-        "operationId": "Portal_Local_Body_Elections__get_proposal_candidates_by_proposal_position_id_S13getProposalCandidatesByProposalPositionId_get",
+        "operationId": "Portal_Local_Body_Elections__get_proposal_candidates_by_proposal_position_id_getProposalCandidatesByProposalPositionId_get",
         "parameters": [
           {
             "name": "proposal_position_id",
@@ -537,11 +556,11 @@
         ]
       }
     },
-    "/portal-frontend-code/S18removeProposalCandidate": {
+    "/portal-frontend-code/removeProposalCandidate": {
       "post": {
         "summary": "[Portal (Local Body Elections)] Remove Proposal Candidate",
-        "description": "Drop a candidate from a position. `is_active` flips to 'N' rather than the row being\ndeleted \u2014 that flag is what every read here filters on, so the candidate leaves S13 and\nS7's proposed_cnt and their slot reopens, while who was proposed and when survives.",
-        "operationId": "Portal_Local_Body_Elections__remove_proposal_candidate_S18removeProposalCandidate_post",
+        "description": "Drop a candidate from a position. `is_active` flips to 'N' rather than the row being\ndeleted \u2014 that flag is what every read here filters on, so the candidate leaves getProposalCandidatesByProposalPositionId and\ngetProposalPositionsOverviewByProposalConstituencyId's proposed_cnt and their slot reopens, while who was proposed and when survives.",
+        "operationId": "Portal_Local_Body_Elections__remove_proposal_candidate_removeProposalCandidate_post",
         "requestBody": {
           "content": {
             "application/json": {
@@ -577,11 +596,11 @@
         ]
       }
     },
-    "/portal-frontend-code/S20updateProposalCandidateStatus": {
+    "/portal-frontend-code/updateProposalCandidateStatus": {
       "post": {
         "summary": "[Portal (Local Body Elections)] Update Proposal Candidate Status",
-        "description": "Move an already-assigned candidate between Proposed / Shortlisted / Confirmed.\n\nThe only write here that changes a `proposal_candidate` row in place: S11 creates one\nand S18 deactivates one. It touches `proposal_status_id` alone, so the position, the\ncadre and `S7`'s `proposed_cnt` are unaffected \u2014 every status is a live row and\nconsumes the same `max_proposals` slot, which is why no slot or eligibility re-check\nbelongs here.\n\n`is_active = 'Y'` is part of the WHERE: a removed candidate is on no screen to\nrestatus, and letting one through would edit a row S13 never returns.",
-        "operationId": "Portal_Local_Body_Elections__update_proposal_candidate_status_S20updateProposalCandidateStatus_post",
+        "description": "Move an already-assigned candidate between Proposed / Shortlisted / Confirmed.\n\nThe only write here that changes a `proposal_candidate` row in place: assignProposalCandidate creates one\nand removeProposalCandidate deactivates one. It touches `proposal_status_id` alone, so the position, the\ncadre and `getProposalPositionsOverviewByProposalConstituencyId`'s `proposed_cnt` are unaffected \u2014 every status is a live row and\nconsumes the same `max_proposals` slot, which is why no slot or eligibility re-check\nbelongs here.\n\n`is_active = 'Y'` is part of the WHERE: a removed candidate is on no screen to\nrestatus, and letting one through would edit a row getProposalCandidatesByProposalPositionId never returns.",
+        "operationId": "Portal_Local_Body_Elections__update_proposal_candidate_status_updateProposalCandidateStatus_post",
         "requestBody": {
           "content": {
             "application/json": {
@@ -617,11 +636,11 @@
         ]
       }
     },
-    "/portal-frontend-code/S19getProposalPositionsWithCandidates": {
+    "/portal-frontend-code/getProposalPositionsWithCandidates": {
       "get": {
         "summary": "[Portal (Local Body Elections)] Get Proposal Positions With Candidates",
-        "description": "Every proposal position that holds at least one active candidate, across every\nconstituency \u2014 the Candidates screen's list, which is not reached by drilling down\nS1..S6 and so cannot key off one proposal_constituency_id.\n\nThe join to proposal_candidate is inner on purpose: a position nobody was proposed\nfor has nothing to show and must not appear. Both the local body (PCon.constituency_id,\na panchayat/ward-level constituency row) and the assembly (through the address chain,\nthe same way S5/S6 resolve it) are returned, because the screen filters on the assembly\nwhile naming the local body.\n\nNo query parameters: the caller filters this list in the browser, and the same rows are\nwhat populates its Role dropdown \u2014 a server-side role filter would narrow the very list\nthe options are derived from.",
-        "operationId": "Portal_Local_Body_Elections__get_proposal_positions_with_candidates_S19getProposalPositionsWithCandidates_get",
+        "description": "Every proposal position that holds at least one active candidate, in the assemblies\nthe session's user has access to \u2014 the Candidates screen's list, which is not reached\nby drilling down getProposalElectionTypes..getProposalConstituenciesByTownId and so cannot key off one proposal_constituency_id.\n\nThe access filter is here rather than in the browser because it is access control: the\nscreen's own four filters are cosmetic, but this one decides what leaves the server.\nIt narrows the rows the Assembly dropdown is built from too, which is correct \u2014 an\noption nobody can open should not be offered.\n\nThe join to proposal_candidate is inner on purpose: a position nobody was proposed\nfor has nothing to show and must not appear. Both the local body (PCon.constituency_id,\na panchayat/ward-level constituency row) and the assembly (through the address chain,\nthe same way getProposalConstituenciesByTehsilId/getProposalConstituenciesByTownId resolve it) are returned, because the screen filters on the assembly\nwhile naming the local body.\n\nNo query parameters: the caller filters this list in the browser, and the same rows are\nwhat populates its Role dropdown \u2014 a server-side role filter would narrow the very list\nthe options are derived from.",
+        "operationId": "Portal_Local_Body_Elections__get_proposal_positions_with_candidates_getProposalPositionsWithCandidates_get",
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -637,11 +656,192 @@
         ]
       }
     },
-    "/portal-frontend-code/S17getCadreScores": {
+    "/portal-frontend-code/getDashboardPositionsByConstituencyId": {
+      "get": {
+        "summary": "[Portal (Local Body Elections)] Get Dashboard Positions By Constituency Id",
+        "description": "Every proposal_position under one assembly, across every election type and every\nlocal body it resolves to (mandal or town) \u2014 the Dashboard screen's whole picture in\none call. Without this, the same data would take an getProposalElectionTypes election types x getMandalsInAConstituency/getTownsInAConstituency\nmandals/towns x getProposalConstituenciesByTehsilId/getProposalConstituenciesByTownId x getProposalPositionsOverviewByProposalConstituencyId fan-out in the browser: one request per (election type,\nmandal-or-town) pair just to find which locations exist, then one more per location.\n\nLEFT OUTER JOIN to proposal_candidate, not INNER like getProposalPositionsWithCandidates: getProposalPositionsWithCandidates must hide a position\nnobody was proposed for, but this screen's \"Not Started\" is exactly that position.\nUnscoped by the caller's own access grants (unlike getProposalPositionsWithCandidates) \u2014 getProposalConstituenciesByTehsilId/getProposalConstituenciesByTownId already let any\nconstituency_id through once the frontend has drilled down to it, and by the time the\nDashboard calls this it has already picked the assembly off getUserAccessAssemblies's own list.\n\nAlso carries `tehsil_id`/`town_id` (exactly one set per row, the other NULL) \u2014 getProposalConstituenciesByTehsilId/getProposalConstituenciesByTownId's\nown inputs \u2014 so a caller that already has one of these rows can jump the wizard\nstraight to a location's Add Members search without re-deriving it through getMandalsInAConstituency/getTownsInAConstituency.",
+        "operationId": "Portal_Local_Body_Elections__get_dashboard_positions_by_constituency_id_getDashboardPositionsByConstituencyId_get",
+        "parameters": [
+          {
+            "name": "constituency_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Constituency Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Local_Body_Elections__HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Portal (Local Body Elections) - API"
+        ]
+      }
+    },
+    "/portal-frontend-code/getDashboardCandidatesByStatus": {
+      "get": {
+        "summary": "[Portal (Local Body Elections)] Get Dashboard Candidates By Status",
+        "description": "The candidate list behind one Dashboard stat tile (Proposed or Confirmed): every\nactive proposal_candidate at proposal_status_id, under one assembly and election\ntype \u2014 the same (assembly, election type) scope getDashboardPositionsByConstituencyId's tiles are already summed over,\ndrilled down to the rows themselves rather than the count.\n\n`nomination_file_path` is a correlated subquery over election_candidate /\nelection_candidate_file (file_type='Pdf', is_deleted not 'Y') rather than a JOIN: a\ncandidate has at most one live election_candidate row in this flow, but a JOIN would\nstill multiply the candidate row if that ever stopped being true, which would desync\nthis list's count from getDashboardPositionsByConstituencyId's. NULL means no PDF has been uploaded for this candidate\nyet, which the caller reads as \"nomination in progress\" rather than \"not confirmed\".\n`is_deleted` is checked as \"not 'Y'\" rather than \"= 'N'\" because both tables leave it\nNULL on insert rather than defaulting it, and NULL = 'N' is NULL (never true) in SQL \u2014\nthat comparison would hide every row nobody has explicitly soft-deleted.",
+        "operationId": "Portal_Local_Body_Elections__get_dashboard_candidates_by_status_getDashboardCandidatesByStatus_get",
+        "parameters": [
+          {
+            "name": "constituency_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Constituency Id"
+            }
+          },
+          {
+            "name": "proposal_election_type_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Proposal Election Type Id"
+            }
+          },
+          {
+            "name": "proposal_status_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Proposal Status Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Local_Body_Elections__HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Portal (Local Body Elections) - API"
+        ]
+      }
+    },
+    "/portal-frontend-code/uploadNominationFile": {
+      "post": {
+        "summary": "[Portal (Local Body Elections)] Upload Nomination File",
+        "description": "The Confirmed-candidate upload button behind getDashboardCandidatesByStatus's nomination column: stores the\nPDF at leader-reports/election_nominations/DDMMYY/<uuid>.pdf and records it in\nelection_candidate / election_candidate_file, which is what getDashboardCandidatesByStatus's correlated\nsubquery reads back as `nomination_file_path`.\n\nelection_candidate is reused across re-uploads (looked up by proposal_candidate_id)\nrather than inserted every time, since it is the row that names *who* the file\nbelongs to; election_candidate_file gets a fresh row per upload instead, so a\nre-upload does not lose the previous file's record \u2014 getDashboardCandidatesByStatus already takes the latest by\nid, so an old row being left behind changes nothing it reads.",
+        "operationId": "Portal_Local_Body_Elections__upload_nomination_file_uploadNominationFile_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Portal_Local_Body_Elections__Body_upload_nomination_file_uploadNominationFile_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Local_Body_Elections__HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Portal (Local Body Elections) - API"
+        ]
+      }
+    },
+    "/portal-frontend-code/getNominationFileUrl": {
+      "get": {
+        "summary": "[Portal (Local Body Elections)] Get Nomination File Url",
+        "description": "A short-lived link to a candidate's uploaded nomination PDF, for the view icon\nnext to getDashboardCandidatesByStatus's nomination badge. leader-reports blocks all public access (checked via\nget_public_access_block before this was built), so the file_path stored on uploadNominationFile's\nwrite is not itself a fetchable URL \u2014 the browser needs a presigned one, generated\nfresh per click rather than stored, so a link seen once cannot be replayed forever.",
+        "operationId": "Portal_Local_Body_Elections__get_nomination_file_url_getNominationFileUrl_get",
+        "parameters": [
+          {
+            "name": "proposal_candidate_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Proposal Candidate Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Local_Body_Elections__HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Portal (Local Body Elections) - API"
+        ]
+      }
+    },
+    "/portal-frontend-code/getCadreScores": {
       "get": {
         "summary": "[Portal (Local Body Elections)] Get Cadre Scores",
         "description": "Performance score, its per-category breakdown and the leader feedback behind it,\nfor one or more membership ids \u2014 one candidate card and the whole compare table are\nthe same payload, so they are the same call.\n\nLookup-first: a membership id whose report row already exists is served straight\nfrom the table, and the rating procedures (seconds per id) run only for the rest.",
-        "operationId": "Portal_Local_Body_Elections__get_cadre_scores_S17getCadreScores_get",
+        "operationId": "Portal_Local_Body_Elections__get_cadre_scores_getCadreScores_get",
         "parameters": [
           {
             "name": "mids",
@@ -678,10 +878,10 @@
         ]
       }
     },
-    "/portal-frontend-code/S14login": {
+    "/portal-frontend-code/login": {
       "post": {
         "summary": "[Portal (Local Body Elections)] Login",
-        "operationId": "Portal_Local_Body_Elections__login_S14login_post",
+        "operationId": "Portal_Local_Body_Elections__login_login_post",
         "requestBody": {
           "content": {
             "application/json": {
@@ -717,10 +917,10 @@
         ]
       }
     },
-    "/portal-frontend-code/S15me": {
+    "/portal-frontend-code/me": {
       "get": {
         "summary": "[Portal (Local Body Elections)] Me",
-        "operationId": "Portal_Local_Body_Elections__me_S15me_get",
+        "operationId": "Portal_Local_Body_Elections__me_me_get",
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -736,10 +936,10 @@
         ]
       }
     },
-    "/portal-frontend-code/S16logout": {
+    "/portal-frontend-code/logout": {
       "post": {
         "summary": "[Portal (Local Body Elections)] Logout",
-        "operationId": "Portal_Local_Body_Elections__logout_S16logout_post",
+        "operationId": "Portal_Local_Body_Elections__logout_logout_post",
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -1680,6 +1880,1260 @@
           }
         }
       }
+    },
+    "/portal-dashboard/api/portal/users/stats": {
+      "get": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] User Stats",
+        "operationId": "Portal_Dashboard__user_stats_api_portal_users_stats_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/teams/stats": {
+      "get": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] Team Stats",
+        "operationId": "Portal_Dashboard__team_stats_api_portal_teams_stats_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/entitlements/stats": {
+      "get": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] Entitlement Stats",
+        "operationId": "Portal_Dashboard__entitlement_stats_api_portal_entitlements_stats_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/entitlements/total": {
+      "get": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] Entitlement Total",
+        "operationId": "Portal_Dashboard__entitlement_total_api_portal_entitlements_total_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/group-entitlements/entitlements": {
+      "get": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] Group Entitlement Entitlements",
+        "operationId": "Portal_Dashboard__group_entitlement_entitlements_api_portal_group_entitlements_entitlements_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/group-entitlements/by-description": {
+      "get": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] Group Entitlement Descriptions",
+        "operationId": "Portal_Dashboard__group_entitlement_descriptions_api_portal_group_entitlements_by_description_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/users": {
+      "get": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] Users",
+        "operationId": "Portal_Dashboard__users_api_portal_users_get",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "active",
+              "title": "Status"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Dashboard__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] Create User",
+        "operationId": "Portal_Dashboard__create_user_api_portal_users_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Portal_Dashboard__UserCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Dashboard__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/users/search": {
+      "get": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] Search Users",
+        "operationId": "Portal_Dashboard__search_users_api_portal_users_search_get",
+        "parameters": [
+          {
+            "name": "field",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Field"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Q"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "all",
+              "title": "Status"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Dashboard__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/lookups/constituencies": {
+      "get": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] Constituencies",
+        "operationId": "Portal_Dashboard__constituencies_api_portal_lookups_constituencies_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/lookups/entitlements": {
+      "get": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] Entitlements",
+        "operationId": "Portal_Dashboard__entitlements_api_portal_lookups_entitlements_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/lookups/group-entitlements": {
+      "get": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] Group Entitlements",
+        "operationId": "Portal_Dashboard__group_entitlements_api_portal_lookups_group_entitlements_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/lookups/user-groups": {
+      "get": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] User Groups",
+        "operationId": "Portal_Dashboard__user_groups_api_portal_lookups_user_groups_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/lookups/parliaments": {
+      "get": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] Parliaments",
+        "operationId": "Portal_Dashboard__parliaments_api_portal_lookups_parliaments_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/lookups/districts": {
+      "get": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] Districts",
+        "operationId": "Portal_Dashboard__districts_api_portal_lookups_districts_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/lookups/zones": {
+      "get": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] Zones",
+        "operationId": "Portal_Dashboard__zones_api_portal_lookups_zones_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/lookups/states": {
+      "get": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] States",
+        "operationId": "Portal_Dashboard__states_api_portal_lookups_states_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/users/{user_id}": {
+      "put": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] Save User",
+        "operationId": "Portal_Dashboard__save_user_api_portal_users__user_id__put",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "User Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Portal_Dashboard__UserSave"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Dashboard__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/users/{user_id}/entitlements": {
+      "get": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] User Entitlements",
+        "operationId": "Portal_Dashboard__user_entitlements_api_portal_users__user_id__entitlements_get",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "User Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Dashboard__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/users/{user_id}/entitlements/menu": {
+      "get": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] User Entitlement Menu",
+        "operationId": "Portal_Dashboard__user_entitlement_menu_api_portal_users__user_id__entitlements_menu_get",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "User Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Dashboard__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/users/{user_id}/groups/{group_id}": {
+      "delete": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] Remove User Group",
+        "operationId": "Portal_Dashboard__remove_user_group_api_portal_users__user_id__groups__group_id__delete",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "User Id"
+            }
+          },
+          {
+            "name": "group_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Group Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Dashboard__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/users/{user_id}/groups": {
+      "post": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] Add User Groups",
+        "operationId": "Portal_Dashboard__add_user_groups_api_portal_users__user_id__groups_post",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "User Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Portal_Dashboard__UserGroupsAssign"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Dashboard__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/users/username-available": {
+      "get": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] Username Available",
+        "operationId": "Portal_Dashboard__username_available_api_portal_users_username_available_get",
+        "parameters": [
+          {
+            "name": "username",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Username"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Dashboard__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/entitlements/availability": {
+      "get": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] Entitlement Availability",
+        "operationId": "Portal_Dashboard__entitlement_availability_api_portal_entitlements_availability_get",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Dashboard__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/entitlements": {
+      "post": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] Create Entitlement",
+        "operationId": "Portal_Dashboard__create_entitlement_api_portal_entitlements_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Portal_Dashboard__EntitlementCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Dashboard__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/group-entitlements/availability": {
+      "get": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] Group Entitlement Availability",
+        "operationId": "Portal_Dashboard__group_entitlement_availability_api_portal_group_entitlements_availability_get",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Dashboard__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/group-entitlements": {
+      "post": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] Create Group Entitlement",
+        "operationId": "Portal_Dashboard__create_group_entitlement_api_portal_group_entitlements_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Portal_Dashboard__GroupEntitlementCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Dashboard__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/group-entitlements/{group_entitlement_id}/entitlements": {
+      "get": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] Group Entitlement Entitlements",
+        "operationId": "Portal_Dashboard__group_entitlement_entitlements_api_portal_group_entitlements__group_entitlement_id__entitlements_get",
+        "parameters": [
+          {
+            "name": "group_entitlement_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Group Entitlement Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Dashboard__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] Assign Entitlements To Group Entitlement",
+        "operationId": "Portal_Dashboard__assign_entitlements_to_group_entitlement_api_portal_group_entitlements__group_entitlement_id__entitlements_post",
+        "parameters": [
+          {
+            "name": "group_entitlement_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Group Entitlement Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Portal_Dashboard__EntitlementsAssign"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Dashboard__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/entitlements/{entitlement_id}/group-entitlements": {
+      "get": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] Entitlement Group Entitlements",
+        "operationId": "Portal_Dashboard__entitlement_group_entitlements_api_portal_entitlements__entitlement_id__group_entitlements_get",
+        "parameters": [
+          {
+            "name": "entitlement_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Entitlement Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Dashboard__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/group-entitlements/{group_entitlement_id}/user-groups": {
+      "get": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] Group Entitlement User Groups",
+        "operationId": "Portal_Dashboard__group_entitlement_user_groups_api_portal_group_entitlements__group_entitlement_id__user_groups_get",
+        "parameters": [
+          {
+            "name": "group_entitlement_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Group Entitlement Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Dashboard__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/user-groups/availability": {
+      "get": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] User Group Availability",
+        "operationId": "Portal_Dashboard__user_group_availability_api_portal_user_groups_availability_get",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Dashboard__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/user-groups": {
+      "post": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] Create User Group",
+        "operationId": "Portal_Dashboard__create_user_group_api_portal_user_groups_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Portal_Dashboard__UserGroupCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Dashboard__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/user-groups/{user_group_id}/group-entitlements": {
+      "get": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] User Group Group Entitlements",
+        "operationId": "Portal_Dashboard__user_group_group_entitlements_api_portal_user_groups__user_group_id__group_entitlements_get",
+        "parameters": [
+          {
+            "name": "user_group_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "User Group Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Dashboard__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] Assign Group Entitlements To User Group",
+        "operationId": "Portal_Dashboard__assign_group_entitlements_to_user_group_api_portal_user_groups__user_group_id__group_entitlements_post",
+        "parameters": [
+          {
+            "name": "user_group_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "User Group Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Portal_Dashboard__GroupEntitlementsAssign"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Dashboard__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/user-groups/{user_group_id}/users": {
+      "get": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] User Group Users",
+        "operationId": "Portal_Dashboard__user_group_users_api_portal_user_groups__user_group_id__users_get",
+        "parameters": [
+          {
+            "name": "user_group_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "User Group Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Dashboard__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-dashboard/api/portal/user-groups/{user_group_id}/group-entitlements/{group_entitlement_id}": {
+      "delete": {
+        "tags": [
+          "Portal Dashboard - portal"
+        ],
+        "summary": "[Portal Dashboard] Remove Group Entitlement From User Group",
+        "operationId": "Portal_Dashboard__remove_group_entitlement_from_user_group_api_portal_user_groups__user_group_id__group_entitlements__group_entitlement_id__delete",
+        "parameters": [
+          {
+            "name": "user_group_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "User Group Id"
+            }
+          },
+          {
+            "name": "group_entitlement_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Group Entitlement Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Dashboard__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1706,6 +3160,25 @@
           "tdp_cadre_id"
         ],
         "title": "AssignProposalCandidate"
+      },
+      "Portal_Local_Body_Elections__Body_upload_nomination_file_uploadNominationFile_post": {
+        "properties": {
+          "proposal_candidate_id": {
+            "type": "integer",
+            "title": "Proposal Candidate Id"
+          },
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "proposal_candidate_id",
+          "file"
+        ],
+        "title": "Body_upload_nomination_file_uploadNominationFile_post"
       },
       "Portal_Local_Body_Elections__HTTPValidationError": {
         "properties": {
@@ -2156,6 +3629,268 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "Portal_Dashboard__EntitlementCreate": {
+        "properties": {
+          "entitlement_type": {
+            "type": "string",
+            "title": "Entitlement Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "entitlement_type"
+        ],
+        "title": "EntitlementCreate"
+      },
+      "Portal_Dashboard__EntitlementsAssign": {
+        "properties": {
+          "entitlement_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Entitlement Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "entitlement_ids"
+        ],
+        "title": "EntitlementsAssign"
+      },
+      "Portal_Dashboard__GroupEntitlementCreate": {
+        "properties": {
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "entitlement_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Entitlement Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "description",
+          "entitlement_ids"
+        ],
+        "title": "GroupEntitlementCreate"
+      },
+      "Portal_Dashboard__GroupEntitlementsAssign": {
+        "properties": {
+          "group_entitlement_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Group Entitlement Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "group_entitlement_ids"
+        ],
+        "title": "GroupEntitlementsAssign"
+      },
+      "Portal_Dashboard__HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/Portal_Dashboard__ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "Portal_Dashboard__UserCreate": {
+        "properties": {
+          "username": {
+            "type": "string",
+            "title": "Username"
+          },
+          "password": {
+            "type": "string",
+            "title": "Password"
+          },
+          "firstname": {
+            "type": "string",
+            "title": "Firstname"
+          },
+          "lastname": {
+            "type": "string",
+            "title": "Lastname"
+          },
+          "gender": {
+            "type": "string",
+            "title": "Gender"
+          },
+          "dateofbirth": {
+            "type": "string",
+            "title": "Dateofbirth"
+          },
+          "mobile": {
+            "type": "string",
+            "title": "Mobile"
+          },
+          "address": {
+            "type": "string",
+            "title": "Address"
+          },
+          "access_type": {
+            "type": "string",
+            "title": "Access Type"
+          },
+          "access_value": {
+            "type": "string",
+            "title": "Access Value"
+          },
+          "is_otp_required": {
+            "type": "string",
+            "title": "Is Otp Required"
+          }
+        },
+        "type": "object",
+        "required": [
+          "username",
+          "password",
+          "firstname",
+          "lastname",
+          "gender",
+          "dateofbirth",
+          "mobile",
+          "address",
+          "access_type",
+          "access_value",
+          "is_otp_required"
+        ],
+        "title": "UserCreate"
+      },
+      "Portal_Dashboard__UserGroupCreate": {
+        "properties": {
+          "notes": {
+            "type": "string",
+            "title": "Notes"
+          },
+          "group_entitlement_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Group Entitlement Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "notes",
+          "group_entitlement_ids"
+        ],
+        "title": "UserGroupCreate"
+      },
+      "Portal_Dashboard__UserGroupsAssign": {
+        "properties": {
+          "group_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Group Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "group_ids"
+        ],
+        "title": "UserGroupsAssign"
+      },
+      "Portal_Dashboard__UserSave": {
+        "properties": {
+          "access_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Access Type"
+          },
+          "access_value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Access Value"
+          },
+          "is_enabled": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Enabled"
+          },
+          "password": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password"
+          }
+        },
+        "type": "object",
+        "title": "UserSave"
+      },
+      "Portal_Dashboard__ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
       }
     }
   },
@@ -2179,6 +3914,10 @@
     {
       "name": "Admin Dashboard - members",
       "description": "Served from /admin-dashboard"
+    },
+    {
+      "name": "Portal Dashboard - portal",
+      "description": "Served from /portal-dashboard"
     }
   ]
 }

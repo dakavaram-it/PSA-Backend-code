@@ -32,7 +32,7 @@ python test_gateway.py       # self-check
 comes before the endpoint. Paths carry the project prefix, e.g.:
 
 ```
-POST /portal-frontend-code/S14login
+POST /portal-frontend-code/login
 GET  /admin-dashboard/api/members
 GET  /portal-dashboard/api/portal/users/stats
 ```
