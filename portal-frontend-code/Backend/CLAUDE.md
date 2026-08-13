@@ -10,26 +10,26 @@ Changing a path, a column alias or a status code breaks a bundle you cannot see 
 
 ## Ground rules
 
-- **Live production database.** No seed, no fixture, no local copy. `S11` writes a real
+- **Live production database.** No seed, no fixture, no local copy. `assignProposalCandidate` writes a real
   `proposal_candidate` row for a real person. Read before you write.
-- **Everything except `S14login` requires a session.** `PUBLIC_PATHS` is the whole
-  allowlist (`/S14login`, `/docs`, `/redoc`, `/openapi.json`). The cadre endpoints serve
+- **Everything except `login` requires a session.** `PUBLIC_PATHS` is the whole
+  allowlist (`/login`, `/docs`, `/redoc`, `/openapi.json`). The cadre endpoints serve
   personal data — names, mobile numbers, voter ids.
 - **No authorization, only authentication.** Any valid account can read and write against
   any constituency.
 - Only `GET` and `POST` exist. Nothing is deleted; `proposal_candidate.is_active` is the
   flag every read filters on.
 - **`proposal_candidate.proposal_status_id` says which kind of row it is** — a lookup into
-  `proposal_status` (1 Proposed, 2 Shortlisted, 3 Confirmed). `S11` takes it in the body and
+  `proposal_status` (1 Proposed, 2 Shortlisted, 3 Confirmed). `assignProposalCandidate` takes it in the body and
   defaults it to `PROPOSED_STATUS_ID`, validating it against the table rather than a list
   here, so a new status is a row and not a deploy. It changes no count: the slot arithmetic
-  in `S7`/`S10` is over active rows whatever their status, so a shortlisted cadre occupies a
+  in `getProposalPositionsOverviewByProposalConstituencyId`/`checkProposalPositionAvailability` is over active rows whatever their status, so a shortlisted cadre occupies a
   `max_proposals` slot exactly as a proposed one does. Rows written before the column have
-  it NULL, which is why `S13` joins `proposal_status` with a LEFT OUTER JOIN — dropping them
-  would desync the list from `S7`'s `proposed_cnt`.
-- **`S18removeProposalCandidate` is the only write that undoes `S11`**, and it is still not a
+  it NULL, which is why `getProposalCandidatesByProposalPositionId` joins `proposal_status` with a LEFT OUTER JOIN — dropping them
+  would desync the list from `getProposalPositionsOverviewByProposalConstituencyId`'s `proposed_cnt`.
+- **`removeProposalCandidate` is the only write that undoes `assignProposalCandidate`**, and it is still not a
   delete: `is_active` goes to `'N'`, which every read filters on, so the candidate leaves
-  `S13` and `S7`'s count and their slot reopens while the row survives. `WHERE … AND
+  `getProposalCandidatesByProposalPositionId` and `getProposalPositionsOverviewByProposalConstituencyId`'s count and their slot reopens while the row survives. `WHERE … AND
   is_active = 'Y'` makes it idempotent — a second call affects 0 rows and answers `404`
   rather than pretending to remove someone twice.
 
@@ -88,17 +88,25 @@ raw-bytes salt — every existing row would stop matching.
   table is not enumerable by timing despite the identical `401`.
 - The throttle is **per username, not per IP**: dev and preview both proxy through Vite, so
   every request arrives from `127.0.0.1` and an IP bucket would throttle all users at once.
-- **One session, two transports.** `S14login` sets the httpOnly `lbe_session` cookie *and*
-  returns the same token in its body as `token`; `session_token(request)` reads
-  `Authorization: Bearer <token>` first and falls back to the cookie, so `current_user`,
-  the guard and `S16logout` never care which arrived. Bearer wins on purpose — a caller
-  that sends one chose it, and a stale cookie in the same browser must not shadow it.
-  Nothing else changes: one `SESSIONS` entry, one TTL, one logout. The cookie stays the
-  browser's primary path because it is the only one an XSS cannot read; the header exists
-  for callers with no cookie jar (another origin, a mobile client, a script).
-- `SESSIONS` and `LOGIN_ATTEMPTS` are process dicts and neither is self-cleaning;
-  `sweep_expired` runs on the login path. Sessions do not survive a restart — with
-  `--reload`, that means every code edit.
+- **The session is a JWT and nothing else.** `login` returns `token` in its body —
+  `issue_token(user)`, the whole user row plus `exp` (`SESSION_TTL`, 8h), signed with
+  `JWT_SECRET`/`ALGORITHM` from `.env`. There is **no cookie and no server-side session
+  store**; the one transport is `Authorization: Bearer <token>`, read by
+  `bearer_token(request)`. `current_user` decodes it and strips `JWT_META_CLAIMS` (`exp`)
+  so callers get the same identity shape `login` returned. Any `jwt.InvalidTokenError` —
+  expired, tampered with, foreign key, not a JWT — is simply "no session", i.e. a `401`.
+- **`entitlements` is part of the identity, not a field beside it.** `entitlements_for(user_id)`
+  reads the names the user's groups grant (`user_group_relation` → `user_group_entitlement` →
+  `group_entitlement_relation` → `entitlement`, `entitlement_type AS entitlement_name`) and the
+  list goes **into the `user` dict**, so it is signed into the token and `me` hands it back on
+  a reload. The cost: a grant changed in the DB is not seen until the token expires or the user
+  logs in again.
+- **A token cannot be revoked before it expires.** `logout` is stateless: it answers
+  `{"ok": true}` and the client drops its copy, but the token stays valid until `exp`.
+  That is the cost of no session store — shorten `SESSION_TTL` or add a denylist if it
+  ever stops being acceptable. Changing `JWT_SECRET` invalidates every issued token.
+- `LOGIN_ATTEMPTS` is a process dict and is not self-cleaning; `sweep_expired` runs on
+  the login path. Sessions now survive a restart, since none of one is held in memory.
 - **`CORSMiddleware` is registered last on purpose**, at the bottom of the file.
   `add_middleware` prepends and index 0 is outermost, so registering it last is what puts
   it *outside* `guard_response` — otherwise a `401` short-circuits before CORS runs and a
@@ -116,24 +124,24 @@ from anywhere may be proposed. What is checked is `constituency_reservation`:
 record compares NULL and so is ineligible.
 
 **`eligibility_flag()` returns a SELECT expression, not a WHERE clause** — `… AS eligible`,
-`'Y'`/`'N'`. S12 therefore returns every cadre the search matched, ineligible ones
+`'Y'`/`'N'`. cadreSearch therefore returns every cadre the search matched, ineligible ones
 included. That is deliberate: it lets the frontend say "no cadre has that membership id"
 and "that cadre is barred by the reservation" differently instead of showing one blank
 result. Only `eligible = 'Y'` rows can be staged there.
 
-`S11` re-checks the same rules on write and answers `409` naming the reservation type in
+`assignProposalCandidate` re-checks the same rules on write and answers `409` naming the reservation type in
 `detail`, which is the text the frontend's error banner shows. Change eligibility in
 `proposal_context()` / `eligibility_flag()`, never in one endpoint. `test_eligibility.py`
 locks down that the expression never mentions an address column again.
 
-**Some seeded `proposal_candidate` rows would fail the check now.** `S13` still returns
-them — it reports what *is* assigned, and filtering it would desync the list from `S7`'s
+**Some seeded `proposal_candidate` rows would fail the check now.** `getProposalCandidatesByProposalPositionId` still returns
+them — it reports what *is* assigned, and filtering it would desync the list from `getProposalPositionsOverviewByProposalConstituencyId`'s
 `proposed_cnt`.
 
-## Scores (S17) — a second, optional database
+## Scores (getCadreScores) — a second, optional database
 
 `report_ratings` lives on the ratings pipeline's own server and is **optional**: with any
-of `REPORT_RATINGS_DB_HOST`/`_USER`/`_PASSWORD` unset, `RATINGS_DB` stays `None` and S17
+of `REPORT_RATINGS_DB_HOST`/`_USER`/`_PASSWORD` unset, `RATINGS_DB` stays `None` and getCadreScores
 answers `{"configured": false, "questions": [], "candidates": []}`. The wizard renders
 without scores rather than not at all — keep that shape, it is a state the UI draws.
 
@@ -149,7 +157,7 @@ without scores rather than not at all — keep that shape, it is a state the UI 
   it as varchar (possibly zero-padded), `leader_feedback` as an INT. Leading zeros are what
   differ. `normalize_mids` additionally strips a pasted `#`.
 - Row keys are the report's **own column names, spaces and all** (`'ACH % (Booth D2D)'`,
-  `'BOOTH 15%'`). S17 returns the row unrenamed and the frontend's compare table names the
+  `'BOOTH 15%'`). getCadreScores returns the row unrenamed and the frontend's compare table names the
   same columns — renaming here silently blanks that table.
 - Feedback question labels come from `members_track.question`, a **different database on
   the same server**, read once into `FEEDBACK_QUESTIONS`. A failure there is cosmetic (the
@@ -164,19 +172,19 @@ Only one path through the frontend wizard reaches live rows:
 
 - One `proposal_consituency`, reachable via **ACHANTA (`constituency_id` 181) → Achanta
   mandal (`tehsil_id` 658)** → panchayat **VALLURU** (`constituency_id` 58153,
-  `election_scope_id` 33). Every other assembly/mandal ends at an empty S5 result.
-- It has no `local_election_body`, so the towns half (S4/S6) yields nothing for it.
+  `election_scope_id` 33). Every other assembly/mandal ends at an empty getProposalConstituenciesByTehsilId result.
+- It has no `local_election_body`, so the towns half (getTownsInAConstituency/getProposalConstituenciesByTownId) yields nothing for it.
 - Every seeded row is `proposal_election_type_id` 8 = **Panchayat**. Row 8 was originally
-  `is_active = NULL, order_no = NULL`, which made S1 hide the one type the data used; it
-  has since been activated. If Panchayat ever disappears from S1, check those two columns.
-- Its positions: `President` (`max_proposals` 3, already full — S11 answers `409`) and
+  `is_active = NULL, order_no = NULL`, which made getProposalElectionTypes hide the one type the data used; it
+  has since been activated. If Panchayat ever disappears from getProposalElectionTypes, check those two columns.
+- Its positions: `President` (`max_proposals` 3, already full — assignProposalCandidate answers `409`) and
   `Vice-President` (open).
 - Reservation is `BC-GENERAL`, so only cadre with `caste_category_id = 2` can be assigned.
 
-## `S19` — the one endpoint that is not keyed by a drilled-down id
+## `getProposalPositionsWithCandidates` — the one endpoint that is not keyed by a drilled-down id
 
 Every other read here takes an id the wizard walked down to (`proposal_constituency_id`,
-`proposal_position_id`). `S19getProposalPositionsWithCandidates` takes nothing: it serves
+`proposal_position_id`). `getProposalPositionsWithCandidates` takes nothing: it serves
 the frontend's Candidates screen, which lists positions **across all constituencies** and
 so has no id to key off.
 
@@ -184,11 +192,11 @@ so has no id to key off.
   nothing to show and must not appear. That is the endpoint's whole filter.
 - It returns both constituencies a position sits under: the **local body**
   (`PCon.constituency_id`, a panchayat/ward-level `constituency` row) and the **assembly**
-  (through `PCon.address_id → user_address.constituency_id`, the way `S5`/`S6` resolve it).
+  (through `PCon.address_id → user_address.constituency_id`, the way `getProposalConstituenciesByTehsilId`/`getProposalConstituenciesByTownId` resolve it).
   The screen filters on the assembly while naming the local body, so dropping either
   breaks it.
 - The per-status counts `COALESCE` a NULL `proposal_status_id` to Proposed, matching the
-  LEFT OUTER JOIN in `S13`, and are `CAST(… AS UNSIGNED)` because `SUM()` is DECIMAL in
+  LEFT OUTER JOIN in `getProposalCandidatesByProposalPositionId`, and are `CAST(… AS UNSIGNED)` because `SUM()` is DECIMAL in
   MySQL and would otherwise reach the browser as a float next to `proposed_cnt`'s integer.
 - **No query parameters, deliberately.** The caller filters in the browser and derives its
   Election Type / Assembly / Role dropdown options from these same rows — narrowing them
@@ -196,26 +204,26 @@ so has no id to key off.
 
 ## Who wrote a row comes from the session, never the body
 
-`proposal_candidate.inserted_user_id` (written by `S11`) and `updated_user_id` (written by
-`S20`) both come from `acting_user_id(request)`, i.e. `current_user(request)["user_id"]` —
-the same identity `S14` put in `SESSIONS`. **Never accept a user id in a request body for
+`proposal_candidate.inserted_user_id` (written by `assignProposalCandidate`) and `updated_user_id` (written by
+`updateProposalCandidateStatus`) both come from `acting_user_id(request)`, i.e. `current_user(request)["user_id"]` —
+the same identity `login` signed into the token. **Never accept a user id in a request body for
 these**: they are an audit trail, and a browser can put any number in a payload. Any future
 write that stamps a user follows the same route. `guard_response` has already rejected
 callers without a live session before a handler runs, so `current_user` is never `None`
 outside `PUBLIC_PATHS`, which is why there is no None check there.
 
-`S18` does **not** stamp `updated_user_id` today — it flips `is_active` and `updated_time`
+`removeProposalCandidate` does **not** stamp `updated_user_id` today — it flips `is_active` and `updated_time`
 only.
 
-## `S20` — the only in-place edit of a `proposal_candidate`
+## `updateProposalCandidateStatus` — the only in-place edit of a `proposal_candidate`
 
-`S11` creates the row and `S18` deactivates it; `S20updateProposalCandidateStatus` is the
+`assignProposalCandidate` creates the row and `removeProposalCandidate` deactivates it; `updateProposalCandidateStatus` is the
 only write that changes one that already exists, and it touches `proposal_status_id`
 alone.
 
-- **No slot or eligibility re-check.** All three statuses are live rows counted by `S7`'s
+- **No slot or eligibility re-check.** All three statuses are live rows counted by `getProposalPositionsOverviewByProposalConstituencyId`'s
   `proposed_cnt`, so moving between them frees nothing and consumes nothing; re-running
-  `S11`'s checks here would refuse a candidate already sitting in the slot.
+  `assignProposalCandidate`'s checks here would refuse a candidate already sitting in the slot.
 - `is_active = 'Y'` is in the WHERE — a removed candidate is on no screen to restatus.
 - MySQL reports 0 affected rows both for "no such row" and for "already that status", so
   the handler re-checks existence before answering `404`: re-saving an unmoved status is
@@ -225,10 +233,10 @@ alone.
 
 - `img_url` is built in SQL as an S3 URL and is `''`, not NULL, when the cadre has no
   image — the card falls back to initials on `''`.
-- `S7` carries the role names and both counts, which is why `S8` and `S10` are unused by
-  the frontend. `S10` is still called internally by `S11`.
+- `getProposalPositionsOverviewByProposalConstituencyId` carries the role names and both counts, which is why `getProposalPositionsByProposalConstituencyId` and `checkProposalPositionAvailability` are unused by
+  the frontend. `checkProposalPositionAvailability` is still called internally by `assignProposalCandidate`.
 - A `429` (login throttle) and a `500` must not read as "session over"; the frontend only
-  logs out on `401`, and only outside `S14`/`S15`/`S16`.
+  logs out on `401`, and only outside `login`/`me`/`logout`.
 - Under the gateway, `StripPrefix` removes the `/portal-frontend-code` mount before this
   app sees the request. Without it `PUBLIC_PATHS` stops matching and login is unreachable;
   `../../test_gateway.py` locks that down.

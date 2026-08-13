@@ -4,7 +4,7 @@
 
 The queries are only ever exercised against a live database, where a placeholder that
 does not line up with its args reads as an empty picklist rather than an error. These
-assert the shapes instead: three user_id placeholders in the union, and S19's IN list
+assert the shapes instead: three user_id placeholders in the union, and getProposalPositionsWithCandidates's IN list
 matching the access ids it was built from.
 """
 

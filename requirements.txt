@@ -4,6 +4,9 @@ fastapi==0.115.6
 uvicorn[standard]==0.32.1
 python-dotenv==1.0.1
 PyMySQL==1.1.1
+# Session JWTs in portal-frontend-code/Backend/main.py (S14 issues one, every other
+# endpoint verifies it).
+PyJWT==2.10.1
 # S3 image upload in portal-frontend-code/Backend/main.py.
 boto3==1.43.67
 # fastapi's Form()/UploadFile() parser — same endpoint. Imported by fastapi, not by us.

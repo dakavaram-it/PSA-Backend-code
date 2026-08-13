@@ -5,16 +5,16 @@ import hashlib
 import hmac
 import os
 import queue
-import secrets
 import time
 from pathlib import Path
 from uuid import uuid4
 
 import boto3
+import jwt
 import pymysql
 from botocore.exceptions import BotoCoreError, ClientError
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -43,7 +43,7 @@ DB = {
 
 # Cadre performance scores live in a database owned by the ratings pipeline, on its own
 # server. It is optional: with any of host/user/password unset, RATINGS_DB stays None
-# and S17 answers {"configured": false} instead of failing, so the wizard renders
+# and getCadreScores answers {"configured": false} instead of failing, so the wizard renders
 # without scores rather than not at all.
 RATINGS_DB = None
 if all(os.environ.get(k) for k in ("REPORT_RATINGS_DB_HOST", "REPORT_RATINGS_DB_USER", "REPORT_RATINGS_DB_PASSWORD")):
@@ -56,8 +56,8 @@ if all(os.environ.get(k) for k in ("REPORT_RATINGS_DB_HOST", "REPORT_RATINGS_DB_
         "cursorclass": pymysql.cursors.DictCursor,
     }
 
-# Nomination PDFs (S24) go to this bucket. Optional like RATINGS_DB: with the key pair
-# unset, S3_CLIENT stays None and S24 answers 503 rather than failing at import time, so
+# Nomination PDFs (uploadNominationFile) go to this bucket. Optional like RATINGS_DB: with the key pair
+# unset, S3_CLIENT stays None and uploadNominationFile answers 503 rather than failing at import time, so
 # the rest of the API still comes up without S3 configured.
 S3_BUCKET = os.environ.get("S3_BUCKET", "leader-reports")
 S3_CLIENT = None
@@ -189,7 +189,7 @@ def update(sql, args=None):
     return _write(DB, _POOL, run)
 
 
-@app.get("/S1getProposalElectionTypes")
+@app.get("/getProposalElectionTypes")
 def get_proposal_election_types():
     return query(
         "SELECT proposal_election_type_id, election_type "
@@ -197,7 +197,7 @@ def get_proposal_election_types():
     )
 
 
-@app.get("/S2getAssemblyConstituenciesInAState")
+@app.get("/getAssemblyConstituenciesInAState")
 def get_assembly_constituencies_in_a_state():
     return query(
         "SELECT C.constituency_id, C.name AS constituency_name "
@@ -208,7 +208,7 @@ def get_assembly_constituencies_in_a_state():
     )
 
 
-# The assemblies one user may work in — S2 narrowed to that user's grants. Three of them,
+# The assemblies one user may work in — getAssemblyConstituenciesInAState narrowed to that user's grants. Three of them,
 # unioned because a user may hold more than one: a row in user_state_access_info covers
 # every assembly in the state, and a row in user_constituency_access_info is either a
 # parliament (covering the assemblies whose parliament_id points at it) or one assembly
@@ -238,15 +238,15 @@ def user_access_assemblies(user_id):
     )
 
 
-# The wizard's assembly picklist, replacing S2. Like every write's user id, the one that
+# The wizard's assembly picklist, replacing getAssemblyConstituenciesInAState. Like every write's user id, the one that
 # scopes this comes from the session and never from a query parameter — a caller must not
 # be able to ask for someone else's assemblies.
-@app.get("/S21getUserAccessAssemblies")
+@app.get("/getUserAccessAssemblies")
 def get_user_access_assemblies(request: Request):
     return user_access_assemblies(acting_user_id(request))
 
 
-@app.get("/S3getMandalsInAConstituency")
+@app.get("/getMandalsInAConstituency")
 def get_mandals_in_a_constituency(constituency_id: int):
     return query(
         "SELECT T.tehsil_id, T.tehsil_name "
@@ -257,7 +257,7 @@ def get_mandals_in_a_constituency(constituency_id: int):
     )
 
 
-@app.get("/S4getTownsInAConstituency")
+@app.get("/getTownsInAConstituency")
 def get_towns_in_a_constituency(constituency_id: int):
     return query(
         "SELECT L.local_election_body_id AS town_id, CONCAT(L.name, ' Town') AS town_name "
@@ -268,7 +268,7 @@ def get_towns_in_a_constituency(constituency_id: int):
     )
 
 
-@app.get("/S5getProposalConstituenciesByTehsilId")
+@app.get("/getProposalConstituenciesByTehsilId")
 def get_proposal_constituencies_by_tehsil_id(
     constituency_id: int, tehsil_id: int, proposal_election_type_id: int
 ):
@@ -283,7 +283,7 @@ def get_proposal_constituencies_by_tehsil_id(
     )
 
 
-@app.get("/S6getProposalConstituenciesByTownId")
+@app.get("/getProposalConstituenciesByTownId")
 def get_proposal_constituencies_by_town_id(
     constituency_id: int, town_id: int, proposal_election_type_id: int
 ):
@@ -298,7 +298,7 @@ def get_proposal_constituencies_by_town_id(
     )
 
 
-@app.get("/S7getProposalPositionsOverviewByProposalConstituencyId")
+@app.get("/getProposalPositionsOverviewByProposalConstituencyId")
 def get_proposal_positions_overview_by_proposal_constituency_id(
     proposal_constituency_id: int,
 ):
@@ -318,7 +318,7 @@ def get_proposal_positions_overview_by_proposal_constituency_id(
     )
 
 
-@app.get("/S8getProposalPositionsByProposalConstituencyId")
+@app.get("/getProposalPositionsByProposalConstituencyId")
 def get_proposal_positions_by_proposal_constituency_id(proposal_constituency_id: int):
     return query(
         "SELECT PP.proposal_position_id, PR.role_name "
@@ -329,7 +329,7 @@ def get_proposal_positions_by_proposal_constituency_id(proposal_constituency_id:
     )
 
 
-@app.get("/S9getProposalConstituencyReservation")
+@app.get("/getProposalConstituencyReservation")
 def get_proposal_constituency_reservation(proposal_constituency_id: int):
     return query(
         "SELECT CR.constituency_reservation_id, CR.reservation_type "
@@ -341,7 +341,7 @@ def get_proposal_constituency_reservation(proposal_constituency_id: int):
     )
 
 
-@app.get("/S10checkProposalPositionAvailability")
+@app.get("/checkProposalPositionAvailability")
 def check_proposal_position_availability(proposal_position_id: int):
     return query(
         "SELECT CASE WHEN PP.max_proposals > COUNT(DISTINCT PC.tdp_cadre_id) "
@@ -411,7 +411,7 @@ def acting_user_id(request):
     return current_user(request)["user_id"]
 
 
-@app.post("/S11assignProposalCandidate")
+@app.post("/assignProposalCandidate")
 def assign_proposal_candidate(body: AssignProposalCandidate, request: Request):
     position = query(
         "SELECT PP.max_proposals, CR.reservation_type, "
@@ -499,7 +499,7 @@ CADRE_SEARCH_FILTERS = {
     "Name": "TC.first_name LIKE %s",
 }
 
-@app.get("/S12cadreSearch")
+@app.get("/cadreSearch")
 def cadre_search(proposal_constituency_id: int, search_type: str, search_value: str):
     if search_type not in CADRE_SEARCH_FILTERS:
         raise HTTPException(
@@ -538,7 +538,7 @@ def cadre_search(proposal_constituency_id: int, search_type: str, search_value: 
     )
 
 
-@app.get("/S13getProposalCandidatesByProposalPositionId")
+@app.get("/getProposalCandidatesByProposalPositionId")
 def get_proposal_candidates_by_proposal_position_id(proposal_position_id: int):
     return query(
         "SELECT PC.proposal_candidate_id, PC.proposal_status_id, "
@@ -554,7 +554,7 @@ def get_proposal_candidates_by_proposal_position_id(proposal_position_id: int):
         "ELSE '' END AS img_url "
         "FROM proposal_candidate PC "
         # Outer join: rows written before proposal_status_id existed have it NULL, and
-        # they are still assigned — dropping them would desync this list from S7's count.
+        # they are still assigned — dropping them would desync this list from getProposalPositionsOverviewByProposalConstituencyId's count.
         "LEFT OUTER JOIN proposal_status PS "
         "ON PC.proposal_status_id = PS.proposal_status_id "
         "JOIN tdp_cadre TC ON PC.tdp_cadre_id = TC.tdp_cadre_id "
@@ -579,11 +579,11 @@ class RemoveProposalCandidate(BaseModel):
     proposal_candidate_id: int
 
 
-@app.post("/S18removeProposalCandidate")
+@app.post("/removeProposalCandidate")
 def remove_proposal_candidate(body: RemoveProposalCandidate):
     """Drop a candidate from a position. `is_active` flips to 'N' rather than the row being
-    deleted — that flag is what every read here filters on, so the candidate leaves S13 and
-    S7's proposed_cnt and their slot reopens, while who was proposed and when survives."""
+    deleted — that flag is what every read here filters on, so the candidate leaves getProposalCandidatesByProposalPositionId and
+    getProposalPositionsOverviewByProposalConstituencyId's proposed_cnt and their slot reopens, while who was proposed and when survives."""
     removed = update(
         "UPDATE proposal_candidate SET is_active = 'N', updated_time = NOW() "
         "WHERE proposal_candidate_id = %s AND is_active = 'Y'",
@@ -599,18 +599,18 @@ class UpdateProposalCandidateStatus(BaseModel):
     proposal_status_id: int
 
 
-@app.post("/S20updateProposalCandidateStatus")
+@app.post("/updateProposalCandidateStatus")
 def update_proposal_candidate_status(body: UpdateProposalCandidateStatus, request: Request):
     """Move an already-assigned candidate between Proposed / Shortlisted / Confirmed.
 
-    The only write here that changes a `proposal_candidate` row in place: S11 creates one
-    and S18 deactivates one. It touches `proposal_status_id` alone, so the position, the
-    cadre and `S7`'s `proposed_cnt` are unaffected — every status is a live row and
+    The only write here that changes a `proposal_candidate` row in place: assignProposalCandidate creates one
+    and removeProposalCandidate deactivates one. It touches `proposal_status_id` alone, so the position, the
+    cadre and `getProposalPositionsOverviewByProposalConstituencyId`'s `proposed_cnt` are unaffected — every status is a live row and
     consumes the same `max_proposals` slot, which is why no slot or eligibility re-check
     belongs here.
 
     `is_active = 'Y'` is part of the WHERE: a removed candidate is on no screen to
-    restatus, and letting one through would edit a row S13 never returns.
+    restatus, and letting one through would edit a row getProposalCandidatesByProposalPositionId never returns.
     """
     if not query(
         "SELECT proposal_status_id FROM proposal_status WHERE proposal_status_id = %s",
@@ -640,11 +640,11 @@ def update_proposal_candidate_status(body: UpdateProposalCandidateStatus, reques
     }
 
 
-@app.get("/S19getProposalPositionsWithCandidates")
+@app.get("/getProposalPositionsWithCandidates")
 def get_proposal_positions_with_candidates(request: Request):
     """Every proposal position that holds at least one active candidate, in the assemblies
     the session's user has access to — the Candidates screen's list, which is not reached
-    by drilling down S1..S6 and so cannot key off one proposal_constituency_id.
+    by drilling down getProposalElectionTypes..getProposalConstituenciesByTownId and so cannot key off one proposal_constituency_id.
 
     The access filter is here rather than in the browser because it is access control: the
     screen's own four filters are cosmetic, but this one decides what leaves the server.
@@ -654,7 +654,7 @@ def get_proposal_positions_with_candidates(request: Request):
     The join to proposal_candidate is inner on purpose: a position nobody was proposed
     for has nothing to show and must not appear. Both the local body (PCon.constituency_id,
     a panchayat/ward-level constituency row) and the assembly (through the address chain,
-    the same way S5/S6 resolve it) are returned, because the screen filters on the assembly
+    the same way getProposalConstituenciesByTehsilId/getProposalConstituenciesByTownId resolve it) are returned, because the screen filters on the assembly
     while naming the local body.
 
     No query parameters: the caller filters this list in the browser, and the same rows are
@@ -676,7 +676,7 @@ def get_proposal_positions_with_candidates(request: Request):
         "CR.reservation_type, "
         "COUNT(DISTINCT PC.tdp_cadre_id) AS proposed_cnt, "
         # Rows written before proposal_status_id existed are proposals, which is what
-        # COALESCE says here and what S13 and the card both read them back as.
+        # COALESCE says here and what getProposalCandidatesByProposalPositionId and the card both read them back as.
         # CAST because SUM() is DECIMAL in MySQL, which would reach the browser as a float
         # ("2.0") next to proposed_cnt's plain integer.
         "CAST(SUM(CASE WHEN COALESCE(PC.proposal_status_id, %s) = 1 THEN 1 ELSE 0 END) AS UNSIGNED) AS proposed_status_cnt, "
@@ -709,23 +709,23 @@ def get_proposal_positions_with_candidates(request: Request):
     )
 
 
-@app.get("/S22getDashboardPositionsByConstituencyId")
+@app.get("/getDashboardPositionsByConstituencyId")
 def get_dashboard_positions_by_constituency_id(constituency_id: int):
     """Every proposal_position under one assembly, across every election type and every
     local body it resolves to (mandal or town) — the Dashboard screen's whole picture in
-    one call. Without this, the same data would take an S1 election types x S3/S4
-    mandals/towns x S5/S6 x S7 fan-out in the browser: one request per (election type,
+    one call. Without this, the same data would take an getProposalElectionTypes election types x getMandalsInAConstituency/getTownsInAConstituency
+    mandals/towns x getProposalConstituenciesByTehsilId/getProposalConstituenciesByTownId x getProposalPositionsOverviewByProposalConstituencyId fan-out in the browser: one request per (election type,
     mandal-or-town) pair just to find which locations exist, then one more per location.
 
-    LEFT OUTER JOIN to proposal_candidate, not INNER like S19: S19 must hide a position
+    LEFT OUTER JOIN to proposal_candidate, not INNER like getProposalPositionsWithCandidates: getProposalPositionsWithCandidates must hide a position
     nobody was proposed for, but this screen's "Not Started" is exactly that position.
-    Unscoped by the caller's own access grants (unlike S19) — S5/S6 already let any
+    Unscoped by the caller's own access grants (unlike getProposalPositionsWithCandidates) — getProposalConstituenciesByTehsilId/getProposalConstituenciesByTownId already let any
     constituency_id through once the frontend has drilled down to it, and by the time the
-    Dashboard calls this it has already picked the assembly off S21's own list.
+    Dashboard calls this it has already picked the assembly off getUserAccessAssemblies's own list.
 
-    Also carries `tehsil_id`/`town_id` (exactly one set per row, the other NULL) — S5/S6's
+    Also carries `tehsil_id`/`town_id` (exactly one set per row, the other NULL) — getProposalConstituenciesByTehsilId/getProposalConstituenciesByTownId's
     own inputs — so a caller that already has one of these rows can jump the wizard
-    straight to a location's Add Members search without re-deriving it through S3/S4.
+    straight to a location's Add Members search without re-deriving it through getMandalsInAConstituency/getTownsInAConstituency.
     """
     return query(
         "SELECT PP.proposal_position_id, PP.max_positions, PP.max_proposals, "
@@ -737,8 +737,8 @@ def get_dashboard_positions_by_constituency_id(constituency_id: int):
         "ELSE CONCAT(L.name, ' Town') END AS mandal_town_name, "
         "T.tehsil_id, L.local_election_body_id AS town_id, "
         "COUNT(DISTINCT PC.tdp_cadre_id) AS proposed_cnt, "
-        # Unlike S19, this does NOT default a missing proposal_status_id to Proposed:
-        # S19's join to proposal_candidate is INNER so PC is never NULL there, but here
+        # Unlike getProposalPositionsWithCandidates, this does NOT default a missing proposal_status_id to Proposed:
+        # getProposalPositionsWithCandidates's join to proposal_candidate is INNER so PC is never NULL there, but here
         # it's a LEFT JOIN (on purpose, so a position with no candidate still appears),
         # so PC.proposal_status_id is NULL both for "no candidate at all" and for a real
         # candidate whose status was never set. Counting only an explicit 1 handles both
@@ -768,20 +768,20 @@ def get_dashboard_positions_by_constituency_id(constituency_id: int):
     )
 
 
-@app.get("/S23getDashboardCandidatesByStatus")
+@app.get("/getDashboardCandidatesByStatus")
 def get_dashboard_candidates_by_status(
     constituency_id: int, proposal_election_type_id: int, proposal_status_id: int
 ):
     """The candidate list behind one Dashboard stat tile (Proposed or Confirmed): every
     active proposal_candidate at proposal_status_id, under one assembly and election
-    type — the same (assembly, election type) scope S22's tiles are already summed over,
+    type — the same (assembly, election type) scope getDashboardPositionsByConstituencyId's tiles are already summed over,
     drilled down to the rows themselves rather than the count.
 
     `nomination_file_path` is a correlated subquery over election_candidate /
     election_candidate_file (file_type='Pdf', is_deleted not 'Y') rather than a JOIN: a
     candidate has at most one live election_candidate row in this flow, but a JOIN would
     still multiply the candidate row if that ever stopped being true, which would desync
-    this list's count from S22's. NULL means no PDF has been uploaded for this candidate
+    this list's count from getDashboardPositionsByConstituencyId's. NULL means no PDF has been uploaded for this candidate
     yet, which the caller reads as "nomination in progress" rather than "not confirmed".
     `is_deleted` is checked as "not 'Y'" rather than "= 'N'" because both tables leave it
     NULL on insert rather than defaulting it, and NULL = 'N' is NULL (never true) in SQL —
@@ -793,7 +793,7 @@ def get_dashboard_candidates_by_status(
         "LB.name AS local_body_name, "
         "CASE WHEN T.tehsil_id IS NOT NULL THEN T.tehsil_name "
         "ELSE CONCAT(L.name, ' Town') END AS mandal_town_name, "
-        # The same S3 URL S12/S13 build, so one cadre's photo is the same everywhere.
+        # The same S3 URL cadreSearch/getProposalCandidatesByProposalPositionId build, so one cadre's photo is the same everywhere.
         # '' rather than NULL when they have no image — the caller falls back to initials.
         "CASE WHEN TC.image IS NOT NULL "
         "THEN CONCAT('https://imagesearch-projectkv.s3.amazonaws.com/cadre_images/', TC.image) "
@@ -820,21 +820,21 @@ def get_dashboard_candidates_by_status(
     )
 
 
-@app.post("/S24uploadNominationFile")
+@app.post("/uploadNominationFile")
 async def upload_nomination_file(
     request: Request,
     proposal_candidate_id: int = Form(...),
     file: UploadFile = File(...),
 ):
-    """The Confirmed-candidate upload button behind S23's nomination column: stores the
+    """The Confirmed-candidate upload button behind getDashboardCandidatesByStatus's nomination column: stores the
     PDF at leader-reports/election_nominations/DDMMYY/<uuid>.pdf and records it in
-    election_candidate / election_candidate_file, which is what S23's correlated
+    election_candidate / election_candidate_file, which is what getDashboardCandidatesByStatus's correlated
     subquery reads back as `nomination_file_path`.
 
     election_candidate is reused across re-uploads (looked up by proposal_candidate_id)
     rather than inserted every time, since it is the row that names *who* the file
     belongs to; election_candidate_file gets a fresh row per upload instead, so a
-    re-upload does not lose the previous file's record — S23 already takes the latest by
+    re-upload does not lose the previous file's record — getDashboardCandidatesByStatus already takes the latest by
     id, so an old row being left behind changes nothing it reads.
     """
     if S3_CLIENT is None:
@@ -885,11 +885,11 @@ async def upload_nomination_file(
     return {"proposal_candidate_id": proposal_candidate_id, "file_path": file_path}
 
 
-@app.get("/S25getNominationFileUrl")
+@app.get("/getNominationFileUrl")
 def get_nomination_file_url(proposal_candidate_id: int):
     """A short-lived link to a candidate's uploaded nomination PDF, for the view icon
-    next to S23's nomination badge. leader-reports blocks all public access (checked via
-    get_public_access_block before this was built), so the file_path stored on S24's
+    next to getDashboardCandidatesByStatus's nomination badge. leader-reports blocks all public access (checked via
+    get_public_access_block before this was built), so the file_path stored on uploadNominationFile's
     write is not itself a fetchable URL — the browser needs a presigned one, generated
     fresh per click rather than stored, so a link seen once cannot be replayed forever.
     """
@@ -951,7 +951,7 @@ def jsonable(row):
 
 def normalize_mids(mids):
     """Digits only ('#1506 7518' -> '15067518'), blanks dropped, order and first
-    occurrence kept. The wizard sends what S12 returned, but a pasted id may carry the
+    occurrence kept. The wizard sends what cadreSearch returned, but a pasted id may carry the
     '#' the rest of the party's tooling prints."""
     out = []
     for raw in mids:
@@ -1066,7 +1066,7 @@ def total_score(performance, feedback):
     return sum(v for v in perf if v is not None) / 2 + sum(v for v in answers if v is not None) / 2
 
 
-@app.get("/S17getCadreScores")
+@app.get("/getCadreScores")
 def get_cadre_scores(mids: str):
     """Performance score, its per-category breakdown and the leader feedback behind it,
     for one or more membership ids — one candidate card and the whole compare table are
@@ -1129,51 +1129,51 @@ def password_hash(username, password, salt_key):
 DUMMY_SALT_KEY = b"nonexistent-user".hex()
 
 
-SESSION_COOKIE = "lbe_session"
 SESSION_TTL = 8 * 60 * 60  # seconds
 
-# token -> {"user": {...}, "expires": epoch}. In process memory, so sessions do not
-# survive a backend restart (with --reload, that means every code edit). The trade is
-# that logging in needs no schema change; move this to a table to outlive restarts.
-SESSIONS = {}
+# The session is a signed JWT and nothing else: no server-side session store, no cookie.
+# The user row travels inside the token, so any worker of any restarted process can verify
+# a request on its own. The trade is that a token cannot be revoked before it expires —
+# /logout only tells the client to drop it. Shorten SESSION_TTL, or add a denylist, if that
+# stops being acceptable.
+JWT_SECRET = env("JWT_SECRET")
+JWT_ALGORITHM = env("ALGORITHM")
 
-# Browsers must never be able to read the session token from JavaScript, so it goes in
-# an httpOnly cookie rather than localStorage. `secure` is opt-in because dev and the
-# PM2 deployment both serve plain HTTP; set COOKIE_SECURE=true wherever there is TLS.
-COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").lower() == "true"
+# JWT bookkeeping, as opposed to the claims that are the identity. Anything here is
+# stripped back off before a decoded token is handed to a caller.
+JWT_META_CLAIMS = ("exp",)
 
 
-# The same token travels two ways: the httpOnly cookie above, and `Authorization:
-# Bearer <token>` for callers with no cookie jar to lean on (a frontend served from
-# another origin, a mobile client, a script). It is one session either way — the
-# SESSIONS entry, its TTL and its logout are shared — so nothing downstream needs to
-# know which transport a request arrived on.
-def session_token(request):
-    # Bearer wins: a caller that sends one chose that transport explicitly, and a stale
-    # cookie left in the same browser must not shadow it.
+def issue_token(user):
+    expires = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
+        seconds=SESSION_TTL
+    )
+    return jwt.encode({**user, "exp": expires}, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+# One transport: `Authorization: Bearer <token>`. Same for the browser, another origin,
+# a mobile client or a script.
+def bearer_token(request):
     scheme, _, value = (request.headers.get("authorization") or "").partition(" ")
-    if scheme.lower() == "bearer" and value.strip():
-        return value.strip()
-    return request.cookies.get(SESSION_COOKIE)
+    return value.strip() if scheme.lower() == "bearer" and value.strip() else None
 
 
 def current_user(request):
-    token = session_token(request)
-    session = SESSIONS.get(token) if token else None
-    if not session:
+    token = bearer_token(request)
+    if not token:
         return None
-    if session["expires"] < time.time():
-        # pop, not del: the async middleware and the sync /S15me handler run on
-        # different threads and can both reach this line for the same token, and the
-        # loser of that race would raise KeyError -> 500 instead of a clean 401.
-        SESSIONS.pop(token, None)
+    try:
+        claims = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except jwt.InvalidTokenError:
+        # Expired, tampered with, signed by another key, or not a JWT at all: every one
+        # of those is simply "no session" to every caller here.
         return None
-    return session["user"]
+    return {k: v for k, v in claims.items() if k not in JWT_META_CLAIMS}
 
 
 # Everything except logging in requires a session: the cadre endpoints serve personal
-# data (names, mobile numbers, voter ids) and S11 writes.
-PUBLIC_PATHS = {"/S14login", "/docs", "/redoc", "/openapi.json"}
+# data (names, mobile numbers, voter ids) and assignProposalCandidate writes.
+PUBLIC_PATHS = {"/login", "/docs", "/redoc", "/openapi.json"}
 
 
 @app.middleware("http")
@@ -1212,17 +1212,13 @@ def recent_failures(username):
     return hits
 
 
-# Neither dict is self-cleaning: current_user only drops a session when that exact
-# token is presented again, and recent_failures only prunes the username it was asked
-# about. So a user who logs in and never returns leaves a session behind forever, and
-# an unauthenticated caller posting /S14login with a million distinct usernames grows
-# LOGIN_ATTEMPTS without bound — the throttle cannot stop that, since it is keyed on
-# the same username being invented. Sweep both whenever a login comes in.
-# ponytail: O(n) scan on the login path; move to a background task if either dict
-# ever gets big enough for that to show up in login latency.
+# recent_failures only prunes the username it was asked about, so an unauthenticated
+# caller posting /login with a million distinct usernames grows LOGIN_ATTEMPTS without
+# bound — the throttle cannot stop that, since it is keyed on the same username being
+# invented. Sweep whenever a login comes in.
+# ponytail: O(n) scan on the login path; move to a background task if the dict ever gets
+# big enough for that to show up in login latency.
 def sweep_expired(now):
-    for token in [t for t, s in SESSIONS.items() if s["expires"] < now]:
-        SESSIONS.pop(token, None)
     for name in [
         n
         for n, hits in LOGIN_ATTEMPTS.items()
@@ -1236,8 +1232,27 @@ class LoginRequest(BaseModel):
     password: str
 
 
-@app.post("/S14login")
-def login(body: LoginRequest, response: Response):
+# What this user is allowed to see, via the groups they belong to. GROUP BY collapses
+# the same entitlement reached through two groups; the row shape is one name per row.
+# ponytail: fine while the list is a handful of names — if it ever runs to hundreds,
+# keep the token thin and read them per request instead.
+def entitlements_for(user_id):
+    rows = query(
+        "SELECT E.entitlement_type AS entitlement_name "
+        "FROM user_group_relation UGR "
+        "JOIN user_group_entitlement UGE ON UGR.user_group_id = UGE.user_group_id "
+        "JOIN group_entitlement_relation GER "
+        "ON UGE.group_entitlement_id = GER.group_entitlement_id "
+        "JOIN entitlement E ON GER.entitlement_id = E.entitlement_id "
+        "WHERE UGR.user_id = %s "
+        "GROUP BY E.entitlement_id ORDER BY entitlement_name",
+        (user_id,),
+    )
+    return [r["entitlement_name"] for r in rows]
+
+
+@app.post("/login")
+def login(body: LoginRequest):
     sweep_expired(time.time())
     if len(recent_failures(body.username)) >= LOGIN_MAX_ATTEMPTS:
         raise HTTPException(429, "Too many failed attempts. Try again in 15 minutes.")
@@ -1279,50 +1294,42 @@ def login(body: LoginRequest, response: Response):
                 "state_id": row["state_id"],
                 "district_id": row["district_id"],
                 "constituency_id": row["constituency_id"],
+                # Part of the identity, not a field beside it: it rides the JWT, so /me
+                # hands it back on a reload and the server is what signed it — a client
+                # cannot grant itself an entitlement it was not issued. The cost is that
+                # a grant changed in the DB is not seen until the token expires
+                # (SESSION_TTL) or the user logs in again.
+                "entitlements": entitlements_for(row["user_id"]),
             }
             LOGIN_ATTEMPTS.pop(body.username, None)
-            # A fresh token per login, so a pre-set cookie cannot be fixated.
-            token = secrets.token_urlsafe(32)
-            SESSIONS[token] = {"user": user, "expires": time.time() + SESSION_TTL}
-            response.set_cookie(
-                SESSION_COOKIE,
-                token,
-                max_age=SESSION_TTL,
-                httponly=True,
-                samesite="lax",
-                secure=COOKIE_SECURE,
-                path="/",
-            )
-            # The cookie is still the browser's own transport; this copy is for callers
-            # that authenticate by header instead. Same token, same session — a client
-            # that ignores it loses nothing.
-            return {**user, "token": token}
+            # The token is the whole session: the caller stores it and presents it as
+            # `Authorization: Bearer <token>` on every later call.
+            return {**user, "token": issue_token(user)}
 
     LOGIN_ATTEMPTS.setdefault(body.username, []).append(time.time())
     # One message for both cases, so it does not reveal which usernames exist.
     raise HTTPException(401, "Invalid username or password")
 
 
-@app.get("/S15me")
+@app.get("/me")
 def me(request: Request):
     # guard_response has already rejected callers without a live session.
     return current_user(request)
 
 
-@app.post("/S16logout")
-def logout(request: Request, response: Response):
-    # Drop the session whichever way it was presented, then clear the cookie regardless
-    # — a header-authenticated caller may still be carrying one from an earlier login.
-    SESSIONS.pop(session_token(request), None)
-    response.delete_cookie(SESSION_COOKIE, path="/")
+@app.post("/logout")
+def logout():
+    # Nothing to drop: a JWT is not stored server-side, so logging out is the client
+    # discarding its token. The token itself stays valid until `exp` — that is the cost
+    # of the stateless session, and why SESSION_TTL is hours rather than days.
     return {"ok": True}
 
 
 # Registered last on purpose, so it wraps guard_response rather than sitting inside it
-# — see the note next to the FastAPI() call. allow_credentials is required for the
-# session cookie to travel at all cross-origin; without it the allowlist above is
-# decorative. Everything is same-origin through the Vite proxy today, so this only
-# matters if the frontend is ever served from somewhere other than :9001.
+# — see the note next to the FastAPI() call. The session travels in a header, not a
+# cookie, so what the allowlist gates is which origins may read a response at all.
+# Everything is same-origin through the Vite proxy today, so this only matters if the
+# frontend is ever served from somewhere other than :9001.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:9001", "http://127.0.0.1:9001"],

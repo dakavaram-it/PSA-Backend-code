@@ -1,4 +1,4 @@
-"""Self-check for S22 (the Dashboard's per-assembly position rollup). No DB, no test
+"""Self-check for getDashboardPositionsByConstituencyId (the Dashboard's per-assembly position rollup). No DB, no test
 framework:
 
     cd Backend && python test_dashboard.py
@@ -34,7 +34,7 @@ def check_scoped_by_constituency():
 
 
 def check_left_join_not_inner():
-    # S19 must hide a position nobody was proposed for; S22 must not, since "Not
+    # getProposalPositionsWithCandidates must hide a position nobody was proposed for; getDashboardPositionsByConstituencyId must not, since "Not
     # Started" is exactly that position.
     calls = capture([])
     main.get_dashboard_positions_by_constituency_id(181)
@@ -46,7 +46,7 @@ def check_left_join_not_inner():
 def check_proposed_status_cnt_requires_explicit_status():
     # The join to proposal_candidate is LEFT, so a position with zero candidates still
     # produces one row with every PC.* column NULL — proposal_status_id included. A
-    # missing/unset status must not be defaulted to Proposed here (unlike S19, whose
+    # missing/unset status must not be defaulted to Proposed here (unlike getProposalPositionsWithCandidates, whose
     # INNER join guarantees a real candidate row): only an explicit 1 counts, so both
     # "no candidate at all" and "a candidate with no status" read as 0, not 1.
     calls = capture([])

@@ -1,4 +1,4 @@
-"""Self-check for the S17 score arithmetic. No DB, no test framework:
+"""Self-check for the getCadreScores score arithmetic. No DB, no test framework:
 
     cd Backend && python test_score.py
 

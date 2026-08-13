@@ -10,7 +10,8 @@ import binascii
 import time
 import types
 
-from fastapi import HTTPException, Response
+import jwt
+from fastapi import HTTPException
 
 import main
 
@@ -41,23 +42,37 @@ def matching_row(user_id=2):
 
 
 def login_against(rows, password=PASSWORD):
-    """Run main.login with the `user` SELECT stubbed out to return `rows`."""
-    real_query, main.query = main.query, lambda sql, args=None: rows
+    """Run main.login with the `user` SELECT stubbed out to return `rows`.
+
+    login() makes a second read for the entitlements once a password matches, so the
+    stub answers on the SQL rather than handing `rows` to every caller."""
+    real_query, main.query = main.query, lambda sql, args=None: (
+        rows if "FROM `user`" in sql else [{"entitlement_name": "TEST_ENTITLEMENT"}]
+    )
     try:
-        return main.login(
-            main.LoginRequest(username=USERNAME, password=password), Response()
-        )
+        return main.login(main.LoginRequest(username=USERNAME, password=password))
     finally:
         main.query = real_query
 
 
-def request_with(cookies=None, headers=None):
-    """The two attributes current_user/session_token read off a Starlette Request."""
-    return types.SimpleNamespace(cookies=cookies or {}, headers=headers or {})
+def request_with(headers=None):
+    """The one attribute current_user/bearer_token reads off a Starlette Request."""
+    return types.SimpleNamespace(headers=headers or {})
+
+
+def bearer(user, ttl=60):
+    """A signed token for `user`, expiring in `ttl` seconds (negative = already dead)."""
+    return {
+        "authorization": "Bearer "
+        + jwt.encode(
+            {**user, "exp": int(time.time()) + ttl},
+            main.JWT_SECRET,
+            algorithm=main.JWT_ALGORITHM,
+        )
+    }
 
 
 def reset():
-    main.SESSIONS.clear()
     main.LOGIN_ATTEMPTS.clear()
 
 
@@ -67,7 +82,7 @@ def test_bad_salt_does_not_block_a_valid_login():
     reset()
     user = login_against([user_row("zz-not-hex", "whatever"), matching_row()])
     assert user["user_id"] == 2, user
-    assert len(main.SESSIONS) == 1
+    assert user["token"]
 
 
 def test_bytes_hash_key_does_not_block_a_valid_login():
@@ -101,84 +116,99 @@ def test_unknown_username_burns_a_hash():
         raise AssertionError("DUMMY_SALT_KEY must be valid hex")
 
 
-def test_sweep_drops_only_stale_entries():
+def test_sweep_drops_only_stale_login_attempts():
     reset()
     now = time.time()
-    main.SESSIONS["live"] = {"user": {}, "expires": now + 60}
-    main.SESSIONS["dead"] = {"user": {}, "expires": now - 1}
     main.LOGIN_ATTEMPTS["recent"] = [now - 1]
     main.LOGIN_ATTEMPTS["old"] = [now - main.LOGIN_WINDOW - 1]
     main.LOGIN_ATTEMPTS["empty"] = []
 
     main.sweep_expired(now)
 
-    assert set(main.SESSIONS) == {"live"}, main.SESSIONS
     assert set(main.LOGIN_ATTEMPTS) == {"recent"}, main.LOGIN_ATTEMPTS
 
 
-def test_expiry_is_idempotent():
-    # Two threads can both see an expired session; the loser used to hit KeyError.
-    reset()
-    main.SESSIONS["tok"] = {"user": {}, "expires": time.time() - 1}
-    request = request_with(cookies={main.SESSION_COOKIE: "tok"})
-    assert main.current_user(request) is None
-    assert main.current_user(request) is None
-
-
-def test_login_returns_the_token_it_set_as_a_cookie():
-    # Header-authenticating callers have no way to read the httpOnly cookie, so the
-    # login body has to carry the same token.
+def test_login_returns_a_token_carrying_the_user():
+    # The token IS the session, so everything /me answers has to be inside it.
     reset()
     user = login_against([matching_row()])
-    assert user["token"] in main.SESSIONS, user.keys()
+    claims = jwt.decode(
+        user["token"], main.JWT_SECRET, algorithms=[main.JWT_ALGORITHM]
+    )
+    assert claims["user_id"] == 2, claims
+    assert claims["username"] == USERNAME
+    # Signed for SESSION_TTL, give or take the second the login took.
+    assert abs(claims["exp"] - (time.time() + main.SESSION_TTL)) < 5, claims["exp"]
+
+
+def test_the_login_token_authenticates_and_hides_jwt_bookkeeping():
+    reset()
+    user = login_against([matching_row()])
+    request = request_with(headers={"authorization": f"Bearer {user['token']}"})
+    identity = main.current_user(request)
+    assert "exp" not in identity, identity
+    assert identity == {k: v for k, v in user.items() if k != "token"}, identity
+
+
+def test_login_returns_entitlements_and_carries_them_in_the_token():
+    # They gate what the portal shows, so a reload (me, i.e. the token) has to know
+    # them too — not just the login response.
+    reset()
+    user = login_against([matching_row()])
+    assert user["entitlements"] == ["TEST_ENTITLEMENT"], user
+    claims = jwt.decode(user["token"], main.JWT_SECRET, algorithms=[main.JWT_ALGORITHM])
+    assert claims["entitlements"] == ["TEST_ENTITLEMENT"], claims
+
+
+def test_expired_token_is_rejected():
+    reset()
+    assert main.current_user(request_with(bearer({"user_id": 7}, ttl=-1))) is None
+
+
+def test_tampered_or_foreign_tokens_are_rejected():
+    reset()
+    good = jwt.encode(
+        {"user_id": 7, "exp": int(time.time()) + 60},
+        main.JWT_SECRET,
+        algorithm=main.JWT_ALGORITHM,
+    )
+    forged = jwt.encode(
+        {"user_id": 7, "exp": int(time.time()) + 60},
+        "not-the-secret",
+        algorithm=main.JWT_ALGORITHM,
+    )
+    # Same claims, wrong key — the signature is the only thing standing between a
+    # caller and any user_id they care to name.
+    assert main.current_user(request_with({"authorization": f"Bearer {forged}"})) is None
+    head, payload, sig = good.split(".")
+    for broken in (f"{head}.{payload}.{sig[:-1]}x", f"{head}.{payload}", "not-a-jwt"):
+        request = request_with({"authorization": f"Bearer {broken}"})
+        assert main.current_user(request) is None, broken
 
 
 def test_bearer_header_authenticates():
     reset()
-    main.SESSIONS["tok"] = {"user": {"user_id": 7}, "expires": time.time() + 60}
-    request = request_with(headers={"authorization": "Bearer tok"})
-    assert main.current_user(request) == {"user_id": 7}
+    assert main.current_user(request_with(bearer({"user_id": 7}))) == {"user_id": 7}
 
 
-def test_bearer_beats_a_stale_cookie():
-    # Both transports present and disagreeing: the explicit header must win, or a
-    # leftover cookie would silently pin the caller to the wrong session.
+def test_a_cookie_no_longer_authenticates():
+    # The cookie transport is gone; only the Authorization header is read.
     reset()
-    main.SESSIONS["fresh"] = {"user": {"user_id": 7}, "expires": time.time() + 60}
-    main.SESSIONS["stale"] = {"user": {"user_id": 8}, "expires": time.time() + 60}
-    request = request_with(
-        cookies={main.SESSION_COOKIE: "stale"},
-        headers={"authorization": "Bearer fresh"},
-    )
-    assert main.current_user(request) == {"user_id": 7}
+    request = types.SimpleNamespace(headers={}, cookies={"lbe_session": "anything"})
+    assert main.current_user(request) is None
 
 
-def test_cookie_still_authenticates_without_a_header():
-    # The header is additive; the browser path must not have moved.
+def test_malformed_authorization_headers_are_not_a_session():
     reset()
-    main.SESSIONS["tok"] = {"user": {"user_id": 7}, "expires": time.time() + 60}
-    assert main.current_user(request_with(cookies={main.SESSION_COOKIE: "tok"})) == {
-        "user_id": 7
-    }
-
-
-def test_malformed_authorization_headers_fall_through():
-    reset()
-    main.SESSIONS["tok"] = {"user": {"user_id": 7}, "expires": time.time() + 60}
     for header in ("", "Bearer", "Bearer   ", "Basic tok", "tok"):
-        request = request_with(
-            cookies={main.SESSION_COOKIE: "tok"}, headers={"authorization": header}
-        )
-        # Nothing usable in the header, so the cookie is what answers.
-        assert main.current_user(request) == {"user_id": 7}, header
-        assert main.current_user(request_with(headers={"authorization": header})) is None
+        assert (
+            main.current_user(request_with({"authorization": header})) is None
+        ), header
 
 
-def test_logout_drops_a_header_session():
-    reset()
-    main.SESSIONS["tok"] = {"user": {"user_id": 7}, "expires": time.time() + 60}
-    main.logout(request_with(headers={"authorization": "Bearer tok"}), Response())
-    assert "tok" not in main.SESSIONS
+def test_logout_answers_ok_without_a_request():
+    # Stateless: there is nothing server-side to drop, and the endpoint takes no args.
+    assert main.logout() == {"ok": True}
 
 
 def test_cors_wraps_the_auth_guard():
