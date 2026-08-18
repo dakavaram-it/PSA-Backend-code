@@ -748,6 +748,10 @@ def get_dashboard_positions_by_constituency_id(constituency_id: int):
     Also carries `reservation_type`, off the same proposal_consituency.constituency_reservation_id
     getProposalConstituencyReservation reads, NULL when the local body has no reservation set — so the
     Dashboard's by-location table can show it without a second call per row.
+
+    Also carries `started_time` off proposal_consituency itself — NULL means the local body's
+    nomination has not been started, non-NULL means it has. This is the Dashboard's own
+    Confirmation Status column; it is not derived from the proposal_position rows below it.
     """
     return query(
         "SELECT PP.proposal_position_id, PP.max_positions, PP.max_proposals, "
@@ -758,7 +762,7 @@ def get_dashboard_positions_by_constituency_id(constituency_id: int):
         "CASE WHEN T.tehsil_id IS NOT NULL THEN T.tehsil_name "
         "ELSE CONCAT(L.name, ' Town') END AS mandal_town_name, "
         "T.tehsil_id, L.local_election_body_id AS town_id, "
-        "CR.reservation_type, "
+        "CR.reservation_type, PCon.started_time, "
         "COUNT(DISTINCT PC.tdp_cadre_id) AS proposed_cnt, "
         # Unlike getProposalPositionsWithCandidates, this does NOT default a missing proposal_status_id to Proposed:
         # getProposalPositionsWithCandidates's join to proposal_candidate is INNER so PC is never NULL there, but here
@@ -787,7 +791,7 @@ def get_dashboard_positions_by_constituency_id(constituency_id: int):
         "PR.proposal_role_id, PR.role_name, PR.order_no, "
         "PCon.proposal_consituency_id, LB.name, "
         "PET.proposal_election_type_id, PET.election_type, T.tehsil_id, T.tehsil_name, "
-        "L.name, L.local_election_body_id, CR.reservation_type "
+        "L.name, L.local_election_body_id, CR.reservation_type, PCon.started_time "
         "ORDER BY PET.election_type, LB.name, PR.order_no",
         (constituency_id,),
     )
