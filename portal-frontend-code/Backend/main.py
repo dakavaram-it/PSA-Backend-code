@@ -823,10 +823,15 @@ def get_dashboard_candidates_by_status(
     `is_deleted` is checked as "not 'Y'" rather than "= 'N'" because both tables leave it
     NULL on insert rather than defaulting it, and NULL = 'N' is NULL (never true) in SQL —
     that comparison would hide every row nobody has explicitly soft-deleted.
+
+    Also carries `gender`, `category_name`/`caste_name` (the same caste join cadreSearch uses) and
+    `reservation_type` for the position's own local body — so this drill-down table can show
+    them without a second call per row.
     """
     return query(
         "SELECT PC.proposal_candidate_id, PC.tdp_cadre_id, TC.membership_id, "
-        "TC.first_name AS member_name, TC.mobile_no, PR.role_name, "
+        "TC.first_name AS member_name, TC.mobile_no, TC.gender, PR.role_name, "
+        "CC.category_name, CT.caste_name, CR.reservation_type, "
         "LB.name AS local_body_name, "
         "CASE WHEN T.tehsil_id IS NOT NULL THEN T.tehsil_name "
         "ELSE CONCAT(L.name, ' Town') END AS mandal_town_name, "
@@ -849,7 +854,13 @@ def get_dashboard_candidates_by_status(
         "JOIN user_address UA ON PCon.address_id = UA.user_address_id "
         "LEFT OUTER JOIN tehsil T ON UA.tehsil_id = T.tehsil_id "
         "LEFT OUTER JOIN local_election_body L ON UA.local_election_body = L.local_election_body_id "
+        "LEFT OUTER JOIN constituency_reservation CR "
+        "ON PCon.constituency_reservation_id = CR.constituency_reservation_id "
         "JOIN tdp_cadre TC ON PC.tdp_cadre_id = TC.tdp_cadre_id "
+        "LEFT OUTER JOIN caste_state CS ON TC.caste_state_id = CS.caste_state_id "
+        "LEFT OUTER JOIN caste CT ON CS.caste_id = CT.caste_id "
+        "LEFT OUTER JOIN caste_category_group CCG ON CS.caste_category_group_id = CCG.caste_category_group_id "
+        "LEFT OUTER JOIN caste_category CC ON CCG.caste_category_id = CC.caste_category_id "
         "WHERE UA.constituency_id = %s AND PCon.proposal_election_type_id = %s "
         "AND PC.proposal_status_id = %s AND PC.is_active = 'Y' AND PCon.enrollment_id = 1 "
         "ORDER BY LB.name, PR.order_no, TC.first_name",
