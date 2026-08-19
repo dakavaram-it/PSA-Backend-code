@@ -188,6 +188,41 @@ Only one path through the frontend wizard reaches live rows:
   `Vice-President` (open).
 - Reservation is `BC-GENERAL`, so only cadre with `caste_category_id = 2` can be assigned.
 
+## Which assembly a proposal constituency sits in is three cases, not one — `assembly_match()`
+
+`proposal_consituency.address_id → user_address` names the assembly directly **only** for
+the mandal- and ward-level rows (MPTC, MPP, ZPTC, Municipal Ward, Corporation Ward). The
+bodies above that level are seeded differently:
+
+| Level | `UA.constituency_id` | Resolve the assembly through |
+|---|---|---|
+| Mandal / ward | the parent assembly | itself |
+| Municipality / Corporation | the body's **own** constituency (self-reference to `PCon.constituency_id`) | `assembly_local_election_body` on `UA.local_election_body` |
+| Zilla Parishath | `NULL` (a ZP is a district) | `constituency.district_id` matching `UA.district_id` |
+
+`assembly_match(ua, pc)` is that rule as one SQL fragment, taking the assembly's
+`constituency_id` **three times**, once per branch. `getDashboardPositionsByConstituencyId`
+and `getDashboardCandidatesByStatus` both use it — the second is the drill-down behind the
+first's tiles, so a body one can reach and the other cannot makes a tile open an empty list.
+Matching on `UA.constituency_id` alone (what both did before) silently dropped every
+whole-body and district row, which is how a Municipality or Zilla Parishath that *has*
+`proposal_position` rows still read as **"Not configured"** on the Dashboard.
+
+`getProposalConstituenciesByTownId` carries the town half of the same rule inline, gated on
+the self-reference on purpose: applying the town→assembly map to ward rows as well would
+list one ward under every assembly its town touches.
+
+**Two call sites still assume the one-column version** and will need this rule when a
+whole-body proposal is actually worked:
+- `getProposalPositionsWithCandidates` scopes with `JOIN constituency AC ON UA.constituency_id = AC.constituency_id` +
+  `AC.constituency_id IN (access)` — a Municipality/Corporation/ZP proposal never reaches
+  the Candidates screen. Fixing it means deciding whether a body spanning several
+  assemblies should appear once per assembly.
+- `proposal_context()` returns `UA.constituency_id AS assembly_constituency_id`, which
+  feeds eligibility — for a whole-body row that is the body's own id (or NULL), so **no
+  cadre is eligible** for a Municipality/Corporation/ZP position. Deciding what "same
+  assembly" means for a body spanning several is a policy call, not a SQL fix.
+
 ## `getProposalPositionsWithCandidates` — the one endpoint that is not keyed by a drilled-down id
 
 Every other read here takes an id the wizard walked down to (`proposal_constituency_id`,

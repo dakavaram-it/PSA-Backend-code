@@ -26,11 +26,41 @@ def check_scoped_by_constituency():
     main.get_dashboard_positions_by_constituency_id(181)
     sql, args = calls[0]
 
-    assert args == (181,), args
+    # Three branches, one assembly id each: the address's own constituency_id, the
+    # whole-body rows that self-reference and resolve through
+    # assembly_local_election_body, and the district-level rows that have neither.
+    assert args == (181, 181, 181), args
     assert sql.count("%s") == len(args), sql
-    assert "WHERE UA.constituency_id = %s AND PCon.enrollment_id = 1" in sql, sql
+    assert "WHERE PCon.enrollment_id = 1 AND (UA.constituency_id = %s" in sql, sql
+    assert "assembly_local_election_body AL" in sql, sql
+    assert "UA.constituency_id IS NULL" in sql, sql
     # The filter has to sit between the joins and the grouping, or MySQL rejects it.
-    assert sql.index("WHERE UA.constituency_id") < sql.index("GROUP BY"), sql
+    assert sql.index("WHERE PCon.enrollment_id") < sql.index("GROUP BY"), sql
+
+
+def check_whole_body_and_district_rows_are_named():
+    # A Municipality/Corporation row has no tehsil and a Zilla Parishath row has neither
+    # tehsil nor town — without the district branch the location column came back NULL.
+    calls = capture([])
+    main.get_dashboard_positions_by_constituency_id(181)
+    sql, _ = calls[0]
+    assert "CONCAT(L.name, ' Town')" in sql, sql
+    assert "CONCAT(D.district_name, ' District')" in sql, sql
+    assert "LEFT OUTER JOIN district D ON UA.district_id = D.district_id" in sql, sql
+    # Every non-aggregated CASE input has to be grouped by, or ONLY_FULL_GROUP_BY rejects it.
+    grouping = sql[sql.index("GROUP BY"):]
+    assert "D.district_name" in grouping, grouping
+
+
+def check_status_drilldown_matches_the_tiles():
+    # The tile and the list it opens must be scoped the same way, or a body the tiles
+    # count opens an empty drill-down.
+    calls = capture([])
+    main.get_dashboard_candidates_by_status(181, 3, 1)
+    sql, args = calls[0]
+    assert args == (181, 181, 181, 3, 1), args
+    assert sql.count("%s") == len(args), sql
+    assert main.assembly_match() in sql, sql
 
 
 def check_left_join_not_inner():
@@ -75,6 +105,8 @@ def check_carries_election_type_and_location():
 
 if __name__ == "__main__":
     check_scoped_by_constituency()
+    check_whole_body_and_district_rows_are_named()
+    check_status_drilldown_matches_the_tiles()
     check_left_join_not_inner()
     check_proposed_status_cnt_requires_explicit_status()
     check_carries_election_type_and_location()

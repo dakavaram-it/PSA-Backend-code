@@ -268,6 +268,33 @@ def get_towns_in_a_constituency(constituency_id: int):
     )
 
 
+# Which assembly a proposal constituency belongs to is NOT one column. It is
+# user_address.constituency_id for every mandal- and ward-level row (MPTC, MPP, ZPTC,
+# Municipal Ward, Corporation Ward) — those address rows name the parent assembly
+# directly. The bodies above that level are seeded differently and do not:
+#   * Municipality / Corporation: constituency_id points at the *body's own*
+#     constituency (the address self-references the proposal constituency), and the
+#     assembly is reachable only through assembly_local_election_body on
+#     user_address.local_election_body.
+#   * Zilla Parishath: constituency_id and local_election_body are both NULL — a ZP is
+#     a district, and only user_address.district_id is set.
+# Matching on constituency_id alone therefore silently dropped every whole-body and
+# district row, which is why a Municipality/Corporation/ZP that has proposal_position
+# rows in the database still read as "Not configured" on the Dashboard.
+# Takes the assembly's constituency_id three times, once per branch.
+def assembly_match(ua="UA", pc="PCon"):
+    return (
+        f"({ua}.constituency_id = %s "
+        f"OR ({ua}.constituency_id = {pc}.constituency_id AND EXISTS ("
+        "SELECT 1 FROM assembly_local_election_body AL "
+        f"WHERE AL.local_election_body_id = {ua}.local_election_body "
+        "AND AL.constituency_id = %s)) "
+        f"OR ({ua}.constituency_id IS NULL AND EXISTS ("
+        "SELECT 1 FROM constituency A WHERE A.constituency_id = %s "
+        f"AND A.district_id = {ua}.district_id)))"
+    )
+
+
 @app.get("/getProposalConstituenciesByTehsilId")
 def get_proposal_constituencies_by_tehsil_id(
     constituency_id: int, tehsil_id: int, proposal_election_type_id: int
@@ -283,6 +310,18 @@ def get_proposal_constituencies_by_tehsil_id(
     )
 
 
+# The assembly a town-based proposal constituency sits in is normally
+# user_address.constituency_id — that is how the ward types (Municipal Ward,
+# Corporation Ward) are seeded, and it is exact: a ward belongs to one assembly even
+# when its town spans several. The whole-body types (Municipality, Corporation) are
+# seeded differently: their address row points constituency_id at the body's *own*
+# constituency, not at a parent assembly, so filtering on it alone matched nothing and
+# every one of those types rendered as "not configured" in the wizard. The second
+# branch is the fallback for exactly those rows — recognised by the address pointing
+# back at the proposal constituency itself — and resolves the assembly through
+# assembly_local_election_body instead. It is gated on that self-reference on purpose:
+# applying the town-to-assembly map to the ward rows as well would list one ward under
+# every assembly its town touches.
 @app.get("/getProposalConstituenciesByTownId")
 def get_proposal_constituencies_by_town_id(
     constituency_id: int, town_id: int, proposal_election_type_id: int
@@ -293,8 +332,13 @@ def get_proposal_constituencies_by_town_id(
         "JOIN constituency C ON PC.constituency_id = C.constituency_id "
         "JOIN user_address UA ON PC.address_id = UA.user_address_id "
         "WHERE PC.proposal_election_type_id = %s AND "
-        "UA.constituency_id = %s AND UA.local_election_body = %s AND PC.enrollment_id = 1",
-        (proposal_election_type_id, constituency_id, town_id),
+        "UA.local_election_body = %s AND PC.enrollment_id = 1 AND "
+        "(UA.constituency_id = %s OR "
+        " (UA.constituency_id = PC.constituency_id AND EXISTS ("
+        "   SELECT 1 FROM assembly_local_election_body AL "
+        "   WHERE AL.local_election_body_id = UA.local_election_body AND "
+        "   AL.constituency_id = %s)))",
+        (proposal_election_type_id, town_id, constituency_id, constituency_id),
     )
 
 
@@ -774,8 +818,13 @@ def get_dashboard_positions_by_constituency_id(constituency_id: int):
         "PCon.proposal_consituency_id AS proposal_constituency_id, "
         "LB.name AS local_body_name, "
         "PET.proposal_election_type_id, PET.election_type, "
+        # Three levels, three names: a mandal row is its tehsil, a town-based body is its
+        # town, and a district-level body (ZP) has neither — without the last branch it
+        # came back NULL and the location rendered with no place under it.
         "CASE WHEN T.tehsil_id IS NOT NULL THEN T.tehsil_name "
-        "ELSE CONCAT(L.name, ' Town') END AS mandal_town_name, "
+        "WHEN L.local_election_body_id IS NOT NULL THEN CONCAT(L.name, ' Town') "
+        "WHEN D.district_id IS NOT NULL THEN CONCAT(D.district_name, ' District') "
+        "END AS mandal_town_name, "
         "T.tehsil_id, L.local_election_body_id AS town_id, "
         "CR.reservation_type, "
         "COUNT(DISTINCT PC.tdp_cadre_id) AS proposed_cnt, "
@@ -795,20 +844,21 @@ def get_dashboard_positions_by_constituency_id(constituency_id: int):
         "JOIN constituency LB ON PCon.constituency_id = LB.constituency_id "
         "LEFT OUTER JOIN tehsil T ON UA.tehsil_id = T.tehsil_id "
         "LEFT OUTER JOIN local_election_body L ON UA.local_election_body = L.local_election_body_id "
+        "LEFT OUTER JOIN district D ON UA.district_id = D.district_id "
         "LEFT OUTER JOIN constituency_reservation CR "
         "ON PCon.constituency_reservation_id = CR.constituency_reservation_id "
         "JOIN proposal_position PP ON PP.proposal_constituency_id = PCon.proposal_consituency_id "
         "JOIN proposal_role PR ON PP.proposal_role_id = PR.proposal_role_id "
         "LEFT OUTER JOIN proposal_candidate PC "
         "ON PP.proposal_position_id = PC.proposal_position_id AND PC.is_active = 'Y' "
-        "WHERE UA.constituency_id = %s AND PCon.enrollment_id = 1 "
+        f"WHERE PCon.enrollment_id = 1 AND {assembly_match()} "
         "GROUP BY PP.proposal_position_id, PP.max_positions, PP.max_proposals, PP.started_time, "
         "PR.proposal_role_id, PR.role_name, PR.order_no, "
         "PCon.proposal_consituency_id, LB.name, "
         "PET.proposal_election_type_id, PET.election_type, T.tehsil_id, T.tehsil_name, "
-        "L.name, L.local_election_body_id, CR.reservation_type "
+        "L.name, L.local_election_body_id, D.district_id, D.district_name, CR.reservation_type "
         "ORDER BY PET.election_type, LB.name, PR.order_no",
-        (constituency_id,),
+        (constituency_id, constituency_id, constituency_id),
     )
 
 
@@ -841,7 +891,9 @@ def get_dashboard_candidates_by_status(
         "CC.category_name, CT.caste_name, CR.reservation_type, "
         "LB.name AS local_body_name, "
         "CASE WHEN T.tehsil_id IS NOT NULL THEN T.tehsil_name "
-        "ELSE CONCAT(L.name, ' Town') END AS mandal_town_name, "
+        "WHEN L.local_election_body_id IS NOT NULL THEN CONCAT(L.name, ' Town') "
+        "WHEN D.district_id IS NOT NULL THEN CONCAT(D.district_name, ' District') "
+        "END AS mandal_town_name, "
         # The same S3 URL cadreSearch/getProposalCandidatesByProposalPositionId build, so one cadre's photo is the same everywhere.
         # '' rather than NULL when they have no image — the caller falls back to initials.
         "CASE WHEN TC.image IS NOT NULL "
@@ -861,6 +913,7 @@ def get_dashboard_candidates_by_status(
         "JOIN user_address UA ON PCon.address_id = UA.user_address_id "
         "LEFT OUTER JOIN tehsil T ON UA.tehsil_id = T.tehsil_id "
         "LEFT OUTER JOIN local_election_body L ON UA.local_election_body = L.local_election_body_id "
+        "LEFT OUTER JOIN district D ON UA.district_id = D.district_id "
         "LEFT OUTER JOIN constituency_reservation CR "
         "ON PCon.constituency_reservation_id = CR.constituency_reservation_id "
         "JOIN tdp_cadre TC ON PC.tdp_cadre_id = TC.tdp_cadre_id "
@@ -868,10 +921,19 @@ def get_dashboard_candidates_by_status(
         "LEFT OUTER JOIN caste CT ON CS.caste_id = CT.caste_id "
         "LEFT OUTER JOIN caste_category_group CCG ON CS.caste_category_group_id = CCG.caste_category_group_id "
         "LEFT OUTER JOIN caste_category CC ON CCG.caste_category_id = CC.caste_category_id "
-        "WHERE UA.constituency_id = %s AND PCon.proposal_election_type_id = %s "
+        # Same assembly resolution as getDashboardPositionsByConstituencyId — this is the drill-down behind
+        # that screen's tiles, so a body it counts and this one cannot reach would make
+        # the tile and the list it opens disagree.
+        f"WHERE {assembly_match()} AND PCon.proposal_election_type_id = %s "
         "AND PC.proposal_status_id = %s AND PC.is_active = 'Y' AND PCon.enrollment_id = 1 "
         "ORDER BY LB.name, PR.order_no, TC.first_name",
-        (constituency_id, proposal_election_type_id, proposal_status_id),
+        (
+            constituency_id,
+            constituency_id,
+            constituency_id,
+            proposal_election_type_id,
+            proposal_status_id,
+        ),
     )
 
 
