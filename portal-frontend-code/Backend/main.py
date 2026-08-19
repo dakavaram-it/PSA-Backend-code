@@ -517,6 +517,12 @@ def assign_proposal_candidate(body: AssignProposalCandidate, request: Request):
 CADRE_SEARCH_FILTERS = {
     "MembershipId": "TC.membership_id = %s",
     "MobileNo": "TC.mobile_no = %s",
+    # The directory service (mypartydashboard.com) is what the frontend searches by name
+    # and mobile number, and its rows carry cadreId — the same tdp_cadre_id. Resolving the
+    # picked row back to this endpoint's eligibility flags by id is one primary-key lookup;
+    # it used to go through the Name filter below, which is an unindexed substring scan of
+    # every cadre in the state.
+    "CadreId": "TC.tdp_cadre_id = %s",
     "Name": "TC.first_name LIKE %s",
 }
 
@@ -524,7 +530,8 @@ CADRE_SEARCH_FILTERS = {
 def cadre_search(proposal_constituency_id: int, search_type: str, search_value: str):
     if search_type not in CADRE_SEARCH_FILTERS:
         raise HTTPException(
-            400, "search_type must be one of MembershipId, MobileNo, Name"
+            400,
+            "search_type must be one of " + ", ".join(CADRE_SEARCH_FILTERS),
         )
     value = f"%{search_value}%" if search_type == "Name" else search_value
     ctx = proposal_context(proposal_constituency_id)
