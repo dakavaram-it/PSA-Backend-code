@@ -117,13 +117,40 @@ raw-bytes salt — every existing row would stop matching.
 
 ## Eligibility
 
-**The assembly, then the reservation.** A cadre's `user_address.constituency_id` must equal
-the proposal constituency's own (`proposal_consituency.address_id` → `user_address`), so
-only cadre from that assembly may be proposed — but nothing below it is checked, so any
-mandal, panchayat or town inside the assembly is fine. `proposal_context()` returns that
-assembly as `assembly_constituency_id` beside the reservation. The reservation itself is
-`constituency_reservation`: `caste_category_id` when set, `gender = 'F'` when set. A cadre
-with no caste category on record compares NULL and so is ineligible.
+**The assembly, then the reservation.** A cadre's `user_address.constituency_id` must be
+one of the assemblies the proposal constituency sits in, so only cadre from there may be
+proposed — but nothing below it is checked, so any mandal, panchayat or town inside is
+fine. The reservation itself is `constituency_reservation`: `caste_category_id` when set,
+`gender = 'F'` when set. A cadre with no caste category on record compares NULL and so is
+ineligible.
+
+**The reservation hangs off `proposal_position`, not `proposal_consituency`** —
+`proposal_position.constituency_reservation_id`. Every position in the database has one and
+every `proposal_consituency` row leaves its own column NULL, so reading the body's meant
+nothing was ever reserved. It is genuinely per role, not per body: all 825 seeded bodies
+with more than one role reserve them differently (a President `GENERAL` beside a
+Vice-President `GENERAL WOMEN`). That is why `proposal_context()` and `cadreSearch` are
+keyed by `proposal_position_id` rather than `proposal_constituency_id`, why
+`getProposalPositionsOverviewByProposalConstituencyId` carries `reservation_type` per row,
+and why the body-level `getProposalConstituencyReservation` endpoint is gone. Note what the
+lookup table actually says: `GENERAL` is `caste_category_id = 1` (OC), so a GENERAL seat
+admits OC cadre only — `gender = 'A'` is the "any" value and only `'F'` constrains.
+
+**Which assemblies those are is not one column** — `assembly_constituency_ids()` resolves
+them from the proposal constituency's `user_address`, the same three shapes
+`assembly_match()` encodes read the other way round, and `proposal_context()` hands the
+list back as `assembly_constituency_ids`:
+- mandal- and ward-level rows (MPTC, MPP, ZPTC, Municipal Ward, Corporation Ward) name
+  their assembly directly — `[UA.constituency_id]`;
+- Municipality / Corporation point at the body's *own* constituency, so the assemblies
+  come from `assembly_local_election_body` on `UA.local_election_body` — a town spanning
+  two assemblies accepts cadre from either;
+- Zilla Parishath has no constituency at all, only `UA.district_id`, so every assembly in
+  that district counts.
+
+Reading `UA.constituency_id` as "the assembly" is what used to make every
+Municipality/Corporation/ZP search answer "belongs to another assembly" for every cadre,
+and every such proposal `409`.
 
 **`eligibility_flag()` returns a SELECT expression, not a WHERE clause** — `… AS eligible`,
 `'Y'`/`'N'`. cadreSearch therefore returns every cadre the search matched, ineligible ones
@@ -132,10 +159,21 @@ included. That is deliberate: it lets the frontend say
 instead of showing one blank result. Only `eligible = 'Y'` rows can be staged there.
 
 **The assembly is the other half, and it is a second flag** — `… AS in_assembly`, `'Y'`/`'N'`,
-from `UA.constituency_id = %s` with the id `proposal_context()` returned. Flagged rather
+from `UA.constituency_id IN (…)` over the ids `proposal_context()` returned. Flagged rather
 than filtered for the same reason the reservation is: the row has to come back for the
 frontend to say "that id belongs to another assembly" instead of "no cadre found". Only
 rows with both flags `'Y'` can be staged.
+
+**The name search is scoped, not flagged, and runs in two statements.** `CadreName` (and
+its older spelling `Name`) is the only substring filter here, so unlike the exact ones it
+is bounded: `tdp_cadre_enrollment_year.enrollment_year_id = ENROLLMENT_YEAR_ID` (7),
+`UA.constituency_id IN (the assemblies above)`, and `LIMIT NAME_SEARCH_LIMIT` (100).
+Selecting the card's columns and applying that filter in one statement makes the
+optimizer drive off `user_address` — half a million rows for one assembly — and join
+tehsil, panchayat and local_election_body to every one of them before the name is ever
+compared (measured: 103s for one search). So the ids are picked first, on their own, and
+a second statement decorates exactly those ids: 4s for the same search. Every other
+search type is still one statement.
 
 `assignProposalCandidate` re-checks the same rules on write and answers `409` naming the reservation type in
 `detail`, which is the text the frontend's error banner shows. Change eligibility in
@@ -212,16 +250,12 @@ whole-body and district row, which is how a Municipality or Zilla Parishath that
 the self-reference on purpose: applying the town→assembly map to ward rows as well would
 list one ward under every assembly its town touches.
 
-**Two call sites still assume the one-column version** and will need this rule when a
+**One call site still assumes the one-column version** and will need this rule when a
 whole-body proposal is actually worked:
 - `getProposalPositionsWithCandidates` scopes with `JOIN constituency AC ON UA.constituency_id = AC.constituency_id` +
   `AC.constituency_id IN (access)` — a Municipality/Corporation/ZP proposal never reaches
   the Candidates screen. Fixing it means deciding whether a body spanning several
   assemblies should appear once per assembly.
-- `proposal_context()` returns `UA.constituency_id AS assembly_constituency_id`, which
-  feeds eligibility — for a whole-body row that is the body's own id (or NULL), so **no
-  cadre is eligible** for a Municipality/Corporation/ZP position. Deciding what "same
-  assembly" means for a body spanning several is a policy call, not a SQL fix.
 
 ## `getProposalPositionsWithCandidates` — the one endpoint that is not keyed by a drilled-down id
 

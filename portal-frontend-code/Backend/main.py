@@ -348,15 +348,17 @@ def get_proposal_positions_overview_by_proposal_constituency_id(
 ):
     return query(
         "SELECT PP.proposal_position_id, PR.proposal_role_id, PR.role_name, "
-        "PP.max_positions, PP.max_proposals, "
+        "PP.max_positions, PP.max_proposals, CR.reservation_type, "
         "COUNT(DISTINCT PC.tdp_cadre_id) AS proposed_cnt "
         "FROM proposal_position PP "
         "JOIN proposal_role PR ON PP.proposal_role_id = PR.proposal_role_id "
+        "LEFT OUTER JOIN constituency_reservation CR "
+        "ON PP.constituency_reservation_id = CR.constituency_reservation_id "
         "LEFT OUTER JOIN proposal_candidate PC "
         "ON PP.proposal_position_id = PC.proposal_position_id AND PC.is_active = 'Y' "
         "WHERE PP.proposal_constituency_id = %s "
         "GROUP BY PP.proposal_position_id, PR.proposal_role_id, PR.role_name, "
-        "PP.max_positions, PP.max_proposals, PR.order_no "
+        "PP.max_positions, PP.max_proposals, CR.reservation_type, PR.order_no "
         "ORDER BY PR.order_no",
         (proposal_constituency_id,),
     )
@@ -369,18 +371,6 @@ def get_proposal_positions_by_proposal_constituency_id(proposal_constituency_id:
         "FROM proposal_position PP "
         "JOIN proposal_role PR ON PP.proposal_role_id = PR.proposal_role_id "
         "WHERE PP.proposal_constituency_id = %s ORDER BY PR.order_no",
-        (proposal_constituency_id,),
-    )
-
-
-@app.get("/getProposalConstituencyReservation")
-def get_proposal_constituency_reservation(proposal_constituency_id: int):
-    return query(
-        "SELECT CR.constituency_reservation_id, CR.reservation_type "
-        "FROM proposal_consituency PC "
-        "JOIN constituency_reservation CR "
-        "ON PC.constituency_reservation_id = CR.constituency_reservation_id "
-        "WHERE PC.proposal_consituency_id = %s",
         (proposal_constituency_id,),
     )
 
@@ -398,24 +388,70 @@ def check_proposal_position_availability(proposal_position_id: int):
     )
 
 
-# A proposal constituency's reservation, plus the assembly it sits in. The assembly is
-# the only part of its address chain that scopes who may be proposed: a cadre has to be
+# Which assembly constituencies one proposal constituency's address resolves to — the
+# same three shapes assembly_match() encodes, read from the proposal constituency's side
+# instead of the assembly's. Reading user_address.constituency_id as "the assembly" is
+# only right for the mandal- and ward-level rows; a Municipality/Corporation address
+# points at the body's own constituency and a Zilla Parishath address has no
+# constituency at all, so both of those used to resolve to something no cadre could ever
+# match and every search answered "belongs to another assembly".
+# A list, not one id: a town spans however many assemblies assembly_local_election_body
+# links it to, and a ZP is a whole district of them.
+def assembly_constituency_ids(row):
+    if row["ua_constituency_id"] is not None and row["ua_constituency_id"] != row["body_constituency_id"]:
+        return [row["ua_constituency_id"]]
+    if row["local_election_body"] is not None:
+        return [
+            r["constituency_id"]
+            for r in query(
+                "SELECT constituency_id FROM assembly_local_election_body "
+                "WHERE local_election_body_id = %s",
+                (row["local_election_body"],),
+            )
+        ]
+    if row["district_id"] is not None:
+        return [
+            r["constituency_id"]
+            for r in query(
+                "SELECT C.constituency_id FROM constituency C "
+                "JOIN election_scope ES ON C.election_scope_id = ES.election_scope_id "
+                "WHERE ES.election_type_id = 2 AND C.district_id = %s "
+                "AND C.deform_date IS NULL",
+                (row["district_id"],),
+            )
+        ]
+    return []
+
+
+# One position's reservation, plus the assemblies its local body sits in. The assembly is
+# the only part of the address chain that scopes who may be proposed: a cadre has to be
 # from the same assembly constituency, but not from the same mandal or panchayat.
 # Reservation (caste category, gender) is the rest of eligibility.
-def proposal_context(proposal_constituency_id):
+#
+# Keyed by the position, not by the local body: the reservation lives on
+# proposal_position.constituency_reservation_id, and every seeded body with more than one
+# role reserves them differently (a President BC-GENERAL beside a Vice-President
+# ST-WOMEN). proposal_consituency.constituency_reservation_id is NULL for every row in the
+# database, so reading it here meant no position was ever reserved for anybody.
+def proposal_context(proposal_position_id):
     rows = query(
         "SELECT CR.reservation_type, CR.caste_category_id AS required_caste_category_id, "
-        "CR.gender AS required_gender, UA.constituency_id AS assembly_constituency_id "
-        "FROM proposal_consituency PC "
+        "CR.gender AS required_gender, UA.constituency_id AS ua_constituency_id, "
+        "PC.constituency_id AS body_constituency_id, UA.local_election_body, UA.district_id "
+        "FROM proposal_position PP "
+        "JOIN proposal_consituency PC "
+        "ON PP.proposal_constituency_id = PC.proposal_consituency_id "
         "JOIN user_address UA ON PC.address_id = UA.user_address_id "
         "LEFT OUTER JOIN constituency_reservation CR "
-        "ON PC.constituency_reservation_id = CR.constituency_reservation_id "
-        "WHERE PC.proposal_consituency_id = %s",
-        (proposal_constituency_id,),
+        "ON PP.constituency_reservation_id = CR.constituency_reservation_id "
+        "WHERE PP.proposal_position_id = %s",
+        (proposal_position_id,),
     )
     if not rows:
-        raise HTTPException(404, "Unknown proposal_constituency_id")
-    return rows[0]
+        raise HTTPException(404, "Unknown proposal_position_id")
+    ctx = rows[0]
+    ctx["assembly_constituency_ids"] = assembly_constituency_ids(ctx)
+    return ctx
 
 
 # SELECT expression flagging whether a cadre satisfies the reservation. It is a flag
@@ -459,23 +495,12 @@ def acting_user_id(request):
 
 @app.post("/assignProposalCandidate")
 def assign_proposal_candidate(body: AssignProposalCandidate, request: Request):
-    position = query(
-        "SELECT PP.max_proposals, CR.reservation_type, "
-        "CR.caste_category_id AS required_caste_category_id, "
-        "CR.gender AS required_gender, "
-        "PUA.constituency_id AS assembly_constituency_id "
-        "FROM proposal_position PP "
-        "JOIN proposal_consituency PCon "
-        "ON PP.proposal_constituency_id = PCon.proposal_consituency_id "
-        "JOIN user_address PUA ON PCon.address_id = PUA.user_address_id "
-        "LEFT OUTER JOIN constituency_reservation CR "
-        "ON PCon.constituency_reservation_id = CR.constituency_reservation_id "
-        "WHERE PP.proposal_position_id = %s",
-        (body.proposal_position_id,),
-    )
-    if not position:
-        raise HTTPException(404, "Unknown proposal_position_id")
-    position = position[0]
+    # The reservation and the assembly scope come from proposal_context, the same place
+    # cadreSearch reads them: this is the write, and it must refuse exactly what the
+    # search refused to stage. Reading the assembly off user_address here instead is what
+    # made every Municipality/Corporation/Zilla Parishath proposal 409 as "different
+    # assembly" — see assembly_constituency_ids().
+    position = proposal_context(body.proposal_position_id)
 
     if not query(
         "SELECT proposal_status_id FROM proposal_status WHERE proposal_status_id = %s",
@@ -498,10 +523,10 @@ def assign_proposal_candidate(body: AssignProposalCandidate, request: Request):
         raise HTTPException(404, "Unknown tdp_cadre_id")
     cadre = cadre[0]
 
-    # The same assembly scope /cadreSearch filters on. Re-checked here because the search
-    # filter is only what the browser was shown: this is the write, so it is where the
-    # rule has to hold.
-    if cadre["assembly_constituency_id"] != position["assembly_constituency_id"]:
+    # The same assembly scope /cadreSearch flags on. Re-checked here because that flag is
+    # only what the browser was shown: this is the write, so it is where the rule has to
+    # hold.
+    if cadre["assembly_constituency_id"] not in position["assembly_constituency_ids"]:
         raise HTTPException(
             409, "Cadre belongs to a different assembly constituency"
         )
@@ -561,33 +586,88 @@ def assign_proposal_candidate(body: AssignProposalCandidate, request: Request):
 CADRE_SEARCH_FILTERS = {
     "MembershipId": "TC.membership_id = %s",
     "MobileNo": "TC.mobile_no = %s",
-    # The directory service (mypartydashboard.com) is what the frontend searches by name
-    # and mobile number, and its rows carry cadreId — the same tdp_cadre_id. Resolving the
-    # picked row back to this endpoint's eligibility flags by id is one primary-key lookup;
-    # it used to go through the Name filter below, which is an unindexed substring scan of
-    # every cadre in the state.
+    # The directory service (mypartydashboard.com) is what the frontend searches by
+    # mobile number, and its rows carry cadreId — the same tdp_cadre_id. Resolving the
+    # picked row back to this endpoint's eligibility flags by id is one primary-key
+    # lookup.
     "CadreId": "TC.tdp_cadre_id = %s",
+    # Two spellings of one filter: "CadreName" is the key every frontend screen uses (it
+    # is also the directory service's), "Name" is what the older PositionDetail screen
+    # sends. Both take the name-search path below.
     "Name": "TC.first_name LIKE %s",
+    "CadreName": "TC.first_name LIKE %s",
 }
 
+NAME_SEARCH_TYPES = ("Name", "CadreName")
+
+# A name is the only substring match here, so unlike the exact filters it is bounded on
+# three sides: the current enrollment year, the position's own assembly, and a row cap.
+# Without the assembly bound it is a LIKE over every cadre in the state; without the
+# enrollment-year join it matches cadre who are no longer enrolled.
+ENROLLMENT_YEAR_ID = 7
+NAME_SEARCH_LIMIT = 100
+
 @app.get("/cadreSearch")
-def cadre_search(proposal_constituency_id: int, search_type: str, search_value: str):
+def cadre_search(proposal_position_id: int, search_type: str, search_value: str):
     if search_type not in CADRE_SEARCH_FILTERS:
         raise HTTPException(
             400,
             "search_type must be one of " + ", ".join(CADRE_SEARCH_FILTERS),
         )
-    value = f"%{search_value}%" if search_type == "Name" else search_value
-    ctx = proposal_context(proposal_constituency_id)
+    is_name = search_type in NAME_SEARCH_TYPES
+    value = f"%{search_value}%" if is_name else search_value
+    ctx = proposal_context(proposal_position_id)
     eligible_sql, eligible_args = eligibility_flag(ctx)
+    assemblies = ctx["assembly_constituency_ids"]
+
+    # Flagged, not filtered, for the same reason the reservation is: a cadre the search
+    # matched in another assembly must read as "that id belongs to another assembly", not
+    # as "no such id". Only rows with both flags 'Y' can be staged, and
+    # assignProposalCandidate refuses the rest on write.
+    if assemblies:
+        in_assembly_sql = (
+            f"CASE WHEN UA.constituency_id IN ({placeholders(assemblies)}) "
+            "THEN 'Y' ELSE 'N' END AS in_assembly, "
+        )
+        in_assembly_args = list(assemblies)
+    else:
+        in_assembly_sql, in_assembly_args = "'N' AS in_assembly, ", []
+
+    # The name search is scoped rather than flagged: a substring over the whole state is a
+    # scan of millions of rows nobody can pick a candidate out of anyway.
+    #
+    # It also runs in two steps — the ids first, the card's columns second. Asking for
+    # both at once makes the optimizer drive off user_address (half a million rows for one
+    # assembly) and join tehsil, panchayat and local_election_body to every one of them
+    # before the name is ever compared: 103s for one search, against 9s for the same
+    # filter selecting ids alone. The LIMIT then bounds what the decorated query has to
+    # touch, and an id list is a primary-key lookup whatever the optimizer does with it.
+    filter_sql = CADRE_SEARCH_FILTERS[search_type]
+    filter_args = [value]
+    if is_name:
+        if not assemblies:
+            return []
+        ids = [
+            row["tdp_cadre_id"]
+            for row in query(
+                "SELECT TC.tdp_cadre_id FROM tdp_cadre TC "
+                "JOIN user_address UA ON TC.address_id = UA.user_address_id "
+                "JOIN tdp_cadre_enrollment_year EY ON TC.tdp_cadre_id = EY.tdp_cadre_id "
+                "WHERE TC.is_deleted = 'N' AND EY.is_deleted = 'N' "
+                "AND EY.enrollment_year_id = %s "
+                f"AND UA.constituency_id IN ({placeholders(assemblies)}) "
+                "AND TC.first_name LIKE %s "
+                f"LIMIT {NAME_SEARCH_LIMIT}",
+                (ENROLLMENT_YEAR_ID, *assemblies, value),
+            )
+        ]
+        if not ids:
+            return []
+        filter_sql = f"TC.tdp_cadre_id IN ({placeholders(ids)})"
+        filter_args = ids
 
     return query(
-        "SELECT " + eligible_sql + ", "
-        # Flagged, not filtered, for the same reason the reservation is: a cadre the
-        # search matched in another assembly must read as "that id belongs to another
-        # assembly", not as "no such id". Only rows with both flags 'Y' can be staged,
-        # and assignProposalCandidate refuses the rest on write.
-        "CASE WHEN UA.constituency_id = %s THEN 'Y' ELSE 'N' END AS in_assembly, "
+        "SELECT " + eligible_sql + ", " + in_assembly_sql +
         "TC.tdp_cadre_id, TC.membership_id, TC.first_name AS member_name, "
         "TC.gender, TC.age, TC.relative_name, TC.relative_type, TC.mobile_no, "
         "CC.category_name, CT.caste_name, C.constituency_id, C.name AS constituency_name, "
@@ -609,8 +689,8 @@ def cadre_search(proposal_constituency_id: int, search_type: str, search_value: 
         "ON CS.caste_category_group_id = CCG.caste_category_group_id "
         "LEFT OUTER JOIN caste_category CC ON CCG.caste_category_id = CC.caste_category_id "
         "LEFT OUTER JOIN voter V ON TC.voter_id = V.voter_id "
-        "WHERE TC.is_deleted = 'N' AND " + CADRE_SEARCH_FILTERS[search_type],
-        (*eligible_args, ctx["assembly_constituency_id"], value),
+        "WHERE TC.is_deleted = 'N' AND " + filter_sql,
+        (*eligible_args, *in_assembly_args, *filter_args),
     )
 
 
@@ -773,7 +853,7 @@ def get_proposal_positions_with_candidates(request: Request):
         "LEFT OUTER JOIN local_election_body L "
         "ON UA.local_election_body = L.local_election_body_id "
         "LEFT OUTER JOIN constituency_reservation CR "
-        "ON PCon.constituency_reservation_id = CR.constituency_reservation_id "
+        "ON PP.constituency_reservation_id = CR.constituency_reservation_id "
         f"WHERE AC.constituency_id IN ({placeholders(access)}) "
         "GROUP BY PP.proposal_position_id, PP.max_positions, PP.max_proposals, "
         "PR.proposal_role_id, PR.role_name, PR.order_no, "
@@ -803,9 +883,10 @@ def get_dashboard_positions_by_constituency_id(constituency_id: int):
     own inputs — so a caller that already has one of these rows can jump the wizard
     straight to a location's Add Members search without re-deriving it through getMandalsInAConstituency/getTownsInAConstituency.
 
-    Also carries `reservation_type`, off the same proposal_consituency.constituency_reservation_id
-    getProposalConstituencyReservation reads, NULL when the local body has no reservation set — so the
-    Dashboard's by-location table can show it without a second call per row.
+    Also carries `reservation_type`, off proposal_position.constituency_reservation_id — per
+    role rather than per local body, since that is where a reservation is actually set, and
+    NULL when the role has none — so the Dashboard's by-location table can show it without
+    a second call per row.
 
     Also carries `started_time` off proposal_position itself — NULL means that role has not
     had a candidate proposed for it yet, non-NULL means it has (assignProposalCandidate stamps it on the
@@ -845,10 +926,10 @@ def get_dashboard_positions_by_constituency_id(constituency_id: int):
         "LEFT OUTER JOIN tehsil T ON UA.tehsil_id = T.tehsil_id "
         "LEFT OUTER JOIN local_election_body L ON UA.local_election_body = L.local_election_body_id "
         "LEFT OUTER JOIN district D ON UA.district_id = D.district_id "
-        "LEFT OUTER JOIN constituency_reservation CR "
-        "ON PCon.constituency_reservation_id = CR.constituency_reservation_id "
         "JOIN proposal_position PP ON PP.proposal_constituency_id = PCon.proposal_consituency_id "
         "JOIN proposal_role PR ON PP.proposal_role_id = PR.proposal_role_id "
+        "LEFT OUTER JOIN constituency_reservation CR "
+        "ON PP.constituency_reservation_id = CR.constituency_reservation_id "
         "LEFT OUTER JOIN proposal_candidate PC "
         "ON PP.proposal_position_id = PC.proposal_position_id AND PC.is_active = 'Y' "
         f"WHERE PCon.enrollment_id = 1 AND {assembly_match()} "
@@ -915,7 +996,7 @@ def get_dashboard_candidates_by_status(
         "LEFT OUTER JOIN local_election_body L ON UA.local_election_body = L.local_election_body_id "
         "LEFT OUTER JOIN district D ON UA.district_id = D.district_id "
         "LEFT OUTER JOIN constituency_reservation CR "
-        "ON PCon.constituency_reservation_id = CR.constituency_reservation_id "
+        "ON PP.constituency_reservation_id = CR.constituency_reservation_id "
         "JOIN tdp_cadre TC ON PC.tdp_cadre_id = TC.tdp_cadre_id "
         "LEFT OUTER JOIN caste_state CS ON TC.caste_state_id = CS.caste_state_id "
         "LEFT OUTER JOIN caste CT ON CS.caste_id = CT.caste_id "
