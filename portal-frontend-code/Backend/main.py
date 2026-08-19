@@ -1040,30 +1040,6 @@ SCORE_POINT_COLUMNS = (
 # leader_feedback holds one q<n>_option / q<n>_points pair per question id.
 FEEDBACK_QUESTION_IDS = (16, 17, 18, 19, 20, 21, 24)
 
-FEEDBACK_QUESTIONS = None
-
-
-def feedback_questions():
-    """Labels for the feedback rows, read once. They live in members_track, a different
-    database on the same server. A failure here is cosmetic — the answers still render,
-    keyed by question id — so it must not take the whole response down with it."""
-    global FEEDBACK_QUESTIONS
-    if FEEDBACK_QUESTIONS is None:
-        ids = ", ".join(str(q) for q in FEEDBACK_QUESTION_IDS)
-        try:
-            rows = ratings_query(
-                "SELECT question_id, question_name FROM members_track.question "
-                f"WHERE question_id IN ({ids})"
-            )
-        except pymysql.Error:
-            rows = []
-        names = {row["question_id"]: row["question_name"] for row in rows}
-        FEEDBACK_QUESTIONS = [
-            {"question_id": q, "question_name": names.get(q)} for q in FEEDBACK_QUESTION_IDS
-        ]
-    return FEEDBACK_QUESTIONS
-
-
 def performance_reports(mids):
     """{mid_key: report row}. The table's name really is spelt 'performace'."""
     rows = ratings_query(
@@ -1116,15 +1092,14 @@ def total_score(performance, feedback):
 
 @app.get("/getCadreScores")
 def get_cadre_scores(mids: str):
-    """Performance score, its per-category breakdown and the leader feedback behind it,
-    for one or more membership ids — one candidate card and the whole compare table are
-    the same payload, so they are the same call.
+    """Performance score and its per-category breakdown, for one or more membership ids —
+    the candidate card's score badge and its Member Since / Renewals fields.
 
     Lookup-first: a membership id whose report row already exists is served straight
     from the table, and the rating procedures (seconds per id) run only for the rest.
     """
     if RATINGS_DB is None:
-        return {"configured": False, "questions": [], "candidates": []}
+        return {"configured": False, "candidates": []}
 
     wanted = normalize_mids(mids.split(","))
     if not wanted:
@@ -1147,10 +1122,9 @@ def get_cadre_scores(mids: str):
                 "membership_id": mid,
                 "total_score": total_score(performance, answers),
                 "performance": performance,
-                "feedback": answers,
             }
         )
-    return {"configured": True, "questions": feedback_questions(), "candidates": candidates}
+    return {"configured": True, "candidates": candidates}
 
 
 # `user`.Hash_Key is PBKDF2 over an MD5 digest of the credentials, as written by the

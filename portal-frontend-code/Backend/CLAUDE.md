@@ -150,7 +150,7 @@ them — it reports what *is* assigned, and filtering it would desync the list f
 
 `report_ratings` lives on the ratings pipeline's own server and is **optional**: with any
 of `REPORT_RATINGS_DB_HOST`/`_USER`/`_PASSWORD` unset, `RATINGS_DB` stays `None` and getCadreScores
-answers `{"configured": false, "questions": [], "candidates": []}`. The wizard renders
+answers `{"configured": false, "candidates": []}`. The wizard renders
 without scores rather than not at all — keep that shape, it is a state the UI draws.
 
 - **Total Score is half of each half**: `(Σ the 11 SCORE_POINT_COLUMNS ÷ 2) + (Σ the
@@ -165,11 +165,10 @@ without scores rather than not at all — keep that shape, it is a state the UI 
   it as varchar (possibly zero-padded), `leader_feedback` as an INT. Leading zeros are what
   differ. `normalize_mids` additionally strips a pasted `#`.
 - Row keys are the report's **own column names, spaces and all** (`'ACH % (Booth D2D)'`,
-  `'BOOTH 15%'`). getCadreScores returns the row unrenamed and the frontend's compare table names the
-  same columns — renaming here silently blanks that table.
-- Feedback question labels come from `members_track.question`, a **different database on
-  the same server**, read once into `FEEDBACK_QUESTIONS`. A failure there is cosmetic (the
-  answers still render, keyed by question id) and must not take the response down.
+  `'BOOTH 15%'`). getCadreScores returns the row unrenamed and the frontend's member card reads
+  `'YEAR'` and `'NO OF TIME'` off it by those names — renaming here silently blanks those fields.
+- **`leader_feedback` is read for `total_score` alone.** The per-answer detail and the
+  question labels are no longer returned: the compare table that rendered them is gone.
 - `jsonable()` exists because DictCursor hands back `Decimal` and `date`, neither of which
   json encodes.
 - `test_score.py` covers the arithmetic and the key matching.
