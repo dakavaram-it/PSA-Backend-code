@@ -235,6 +235,92 @@ def _not_scheduled_counts(meeting_rows: list[dict[str, Any]]) -> dict[str, int]:
     return out
 
 
+# The PC-side twin of `_ROSTER_JOINS`, joined against
+# `meeting_conducted_status.location_id` instead of `meeting_schedules.entity_id`.
+# `location_id` is already a varchar (the same column `CAST(s.entity_id AS CHAR)`
+# gets compared to elsewhere in this file), so no cast is needed on this side.
+_PC_ROSTER_JOINS = {
+    "Unit": ("""JOIN unit u ON u.id = mcs.location_id
+                JOIN booth b ON b.unit_id = u.id AND b.publication_id = %s""", True),
+    "AC": ("JOIN assembly a ON a.id = mcs.location_id", False),
+    "PC": ("JOIN parliament p ON p.id = mcs.location_id", False),
+}
+
+
+def _pc_matched_counts(by_level: dict[str, list[str]]) -> dict[str, dict[str, int]]:
+    """Per level and meeting id: how many distinct roster locations that
+    meeting's own `meeting_conducted_status` rows land on — the PC-side twin
+    of `_matched_counts`."""
+    parts, args = [], []
+    for level, ids in by_level.items():
+        join, needs_publication = _PC_ROSTER_JOINS[level]
+        parts.append(f"""
+            SELECT '{level}' AS level, mcs.meeting_id AS id, COUNT(DISTINCT mcs.location_id) AS matched
+              FROM meeting_conducted_status mcs
+              {join}
+             WHERE mcs.meeting_id IN ({db.placeholders(ids)})
+             GROUP BY mcs.meeting_id""")
+        if needs_publication:
+            args.append(config.UNIT_PUBLICATION_ID)
+        args.extend(ids)
+
+    out: dict[str, dict[str, int]] = {level: {} for level in by_level}
+    for r in db.rows(" UNION ALL ".join(parts), tuple(args)):
+        out[r["level"]][str(r["id"])] = r["matched"]
+    return out
+
+
+def _pc_not_updated_counts(meeting_rows: list[dict[str, Any]]) -> dict[str, int]:
+    """Per meeting: how many of its level's roster locations have no
+    `meeting_conducted_status` row at all — the PC-side twin of
+    `_not_scheduled_counts`, so "PC Not Updated" means the same thing PC-side
+    that "Not Updated"/"never scheduled" already means App-side, rather than
+    the explicit-`'N'` remainder it used to mean.
+
+    Same reasoning throughout: only the roster ids a meeting's own
+    `location_id`s actually cover get subtracted, never a flat roster-size
+    difference, and Mandal is diffed in Python against `dakavara_pa`'s
+    roster since it shares no id space with `mytdp` to join on.
+    """
+    by_level: dict[str, list[str]] = {}
+    for r in meeting_rows:
+        by_level.setdefault(adapt.level_code(r["level_name"]), []).append(str(r["id"]))
+
+    out: dict[str, int] = {}
+
+    joined = {lvl: ids for lvl, ids in by_level.items() if lvl in _PC_ROSTER_JOINS}
+    if joined:
+        sizes_sql, sizes_args = [], []
+        for level in joined:
+            sizes_sql.append(_ROSTER_SIZES[level])
+            if level == "Unit":
+                sizes_args.append(config.UNIT_PUBLICATION_ID)
+        sizes = {
+            r["level"]: r["n"]
+            for r in db.rows(" UNION ALL ".join(sizes_sql), tuple(sizes_args))
+        }
+        matched = _pc_matched_counts(joined)
+        for level, ids in joined.items():
+            for mid in ids:
+                out[mid] = max(sizes.get(level, 0) - matched[level].get(mid, 0), 0)
+
+    mandal_ids = by_level.get("Mandal", [])
+    if mandal_ids:
+        marks = db.placeholders(mandal_ids)
+        roster_ids = {str(r["location_id"]) for r in db.rows(_COMMITTEE_LOCATIONS) if r["location_id"] is not None}
+        covered_by_meeting: dict[str, set[str]] = {}
+        for r in db.rows(
+            f"SELECT meeting_id, location_id FROM meeting_conducted_status WHERE meeting_id IN ({marks})",
+            tuple(mandal_ids),
+        ):
+            covered_by_meeting.setdefault(str(r["meeting_id"]), set()).add(str(r["location_id"]))
+        for mid in mandal_ids:
+            matched_mandal = len(roster_ids & covered_by_meeting.get(mid, set()))
+            out[mid] = max(len(roster_ids) - matched_mandal, 0)
+
+    return out
+
+
 @router.get("")
 def list_meetings(
     from_date: str = Query(..., alias="from", description="YYYY-MM-DD"),
@@ -247,14 +333,18 @@ def list_meetings(
          ORDER BY m.meeting_date""",
         (config.MEETING_TYPE_ID, from_date, to_date),
     )
-    # Neither group needs the other's answer and both are seconds of database
-    # work, so they overlap rather than queue.
-    agg, not_scheduled = db.parallel(
+    # None of the three groups needs another's answer and each is seconds of
+    # database work, so they overlap rather than queue.
+    agg, not_scheduled, pc_not_updated = db.parallel(
         lambda: _aggregates([str(r["id"]) for r in rows]),
         lambda: _not_scheduled_counts(rows),
+        lambda: _pc_not_updated_counts(rows),
     )
     return [
-        adapt.meeting(r, agg.get(str(r["id"]), {}), not_scheduled.get(str(r["id"]), 0))
+        adapt.meeting(
+            r, agg.get(str(r["id"]), {}), not_scheduled.get(str(r["id"]), 0),
+            pc_not_updated.get(str(r["id"]), 0),
+        )
         for r in rows
     ]
 
@@ -263,27 +353,115 @@ def _ids(meeting_ids: str) -> list[str]:
     return [i for i in meeting_ids.split(",") if i]
 
 
+def _unit_lookup() -> dict[str, dict[str, str]]:
+    """Per unit id: the assembly and parliament its live booth roll sits in —
+    the same (assembly, unit) pairing `/api/units` counts from, scoped to the
+    live roll (`config.UNIT_PUBLICATION_ID`). Fetched once and applied in
+    Python rather than joined per row: `booth` has no index MySQL can use
+    against a per-row join here, the same reason `schedule_summary` builds
+    this map separately instead of joining it inline (see its docstring)."""
+    return {
+        str(r["unit_id"]): {"assembly": r["assembly_code"] or "", "parliament": r["parliament_name"] or ""}
+        for r in db.rows(
+            """SELECT DISTINCT UT.id AS unit_id, AC.code AS assembly_code, PC.parliament_name AS parliament_name
+                 FROM booth B
+                 JOIN assembly AC ON B.assembly_id = AC.id AND B.publication_id = %s
+                 JOIN unit UT ON B.unit_id = UT.id
+                 LEFT JOIN parliament PC ON PC.id = AC.parliament_id""",
+            (config.UNIT_PUBLICATION_ID,),
+        )
+    }
+
+
 def _schedule_rows(meeting_ids: str, condition: str) -> dict[str, Any]:
-    """Row-level `meeting_schedules` detail behind an App-side figure."""
+    """Row-level `meeting_schedules` detail behind an App-side figure.
+
+    `location`, `assembly` and `parliament` are resolved the same way
+    `/schedule-summary` resolves them for its own rows — unit code (plus its
+    booth-roll assembly/parliament) at Unit level, the schedule's own
+    `assembly_id` (plus its parliament) at Mandal, assembly/parliament name
+    at AC/PC — rather than `location_text`, which is free text entered at
+    schedule time and often blank or stale. `entity_id`'s id space collides
+    across levels (unit 207 and assembly 207 both exist), so which join
+    applies has to follow the meeting's own level, not "whichever join isn't
+    null" — see the fuller note on `schedule_summary`.
+    """
     ids = _ids(meeting_ids)
     if not ids:
         return {"total": 0, "rows": []}
     marks = db.placeholders(ids)
     rows = db.rows(
-        f"""SELECT id, meeting_id, location_text, meeting_time
-              FROM meeting_schedules
-             WHERE meeting_id IN ({marks}) AND {condition}
-             ORDER BY meeting_id, id""",
+        f"""SELECT s.id, s.meeting_id, s.entity_id, s.location_text, s.meeting_time,
+                   ml.level_name,
+                   u.code AS unit_code,
+                   ae.name AS assembly_name, aep.parliament_name AS assembly_parliament_name,
+                   pe.parliament_name AS entity_parliament_name,
+                   ma.name AS mandal_assembly_name, map.parliament_name AS mandal_parliament_name,
+                   md.name AS mandal_name, tn.town_name
+              FROM meeting_schedules s
+              JOIN meetings mt ON mt.id = s.meeting_id
+              LEFT JOIN meeting_levels ml ON ml.id = mt.meeting_level_id
+              LEFT JOIN unit u ON u.id = CAST(s.entity_id AS CHAR)
+              LEFT JOIN assembly ae ON ae.id = CAST(s.entity_id AS CHAR)
+              LEFT JOIN parliament aep ON aep.id = ae.parliament_id
+              LEFT JOIN parliament pe ON pe.id = CAST(s.entity_id AS CHAR)
+              LEFT JOIN mandal md ON md.id = CAST(s.entity_id AS CHAR)
+              LEFT JOIN town tn ON tn.id = CAST(s.entity_id AS CHAR)
+              LEFT JOIN assembly ma ON ma.id = CAST(s.assembly_id AS CHAR)
+              LEFT JOIN parliament map ON map.id = ma.parliament_id
+             WHERE s.meeting_id IN ({marks}) AND {condition}
+             ORDER BY s.meeting_id, s.id""",
         tuple(ids),
     )
+
+    mandal_locations: dict[str, str] = {}
+    if any(adapt.level_code(r["level_name"]) == "Mandal" for r in rows):
+        mandal_locations = {
+            str(r["location_id"]): r["location_name"] or ""
+            for r in db.rows(_COMMITTEE_LOCATIONS)
+            if r["location_id"] is not None
+        }
+
+    unit_lookup: dict[str, dict[str, str]] = {}
+    if any(adapt.level_code(r["level_name"]) == "Unit" for r in rows):
+        unit_lookup = _unit_lookup()
+
+    def _fields(r: dict[str, Any]) -> dict[str, str]:
+        level = adapt.level_code(r["level_name"])
+        if level == "PC":
+            return {
+                "location": r["entity_parliament_name"] or r["location_text"] or "",
+                "assembly": "", "parliament": "",
+            }
+        if level == "AC":
+            return {
+                "location": r["assembly_name"] or r["location_text"] or "",
+                "assembly": "", "parliament": r["assembly_parliament_name"] or "",
+            }
+        if level == "Mandal":
+            return {
+                "location": (
+                    mandal_locations.get(str(r["entity_id"]))
+                    or r["mandal_name"] or r["town_name"] or r["location_text"] or ""
+                ),
+                "assembly": r["mandal_assembly_name"] or "",
+                "parliament": r["mandal_parliament_name"] or "",
+            }
+        info = unit_lookup.get(str(r["entity_id"]), {})
+        return {
+            "location": r["unit_code"] or r["location_text"] or "",
+            "assembly": info.get("assembly", ""),
+            "parliament": info.get("parliament", ""),
+        }
+
     return {
         "total": len(rows),
         "rows": [
             {
                 "id": r["id"],
                 "meetingId": str(r["meeting_id"]),
-                "location": r["location_text"] or "",
                 "time": r["meeting_time"] or "",
+                **_fields(r),
             }
             for r in rows
         ],
@@ -293,24 +471,81 @@ def _schedule_rows(meeting_ids: str, condition: str) -> dict[str, Any]:
 def _conducted_status_rows(meeting_ids: str, condition: str) -> dict[str, Any]:
     """Row-level `meeting_conducted_status` detail behind a PC-side figure.
 
-    `role`/`unit` are looked up for a readable row; a location outside `unit`
-    (a level other than Unit) falls back to the raw id rather than dropping
-    the row, since no other level has real data yet to confirm its join.
+    `location`, `assembly` and `parliament` are resolved the same rich way
+    the App-side `_schedule_rows` resolves them — unit code (plus its
+    booth-roll assembly/parliament) at Unit level, assembly/parliament name
+    at AC/PC — joined straight off `location_id`, which (confirmed by
+    `_PC_ROSTER_JOINS`, used for the Not Updated count) needs no cast the
+    way `meeting_schedules.entity_id` does.
+
+    Mandal is the exception: unlike `meeting_schedules`, this table carries
+    no `assembly_id` column of its own, so there is no row-level path to a
+    mandal's assembly/parliament here — only the enrolled committee roster's
+    own location name (`_COMMITTEE_LOCATIONS`), the same source
+    `_schedule_rows` prefers for its Mandal `location`. Assembly/parliament
+    are left blank there rather than guessed, same reasoning as
+    `_level_roster`'s Mandal branch.
     """
     ids = _ids(meeting_ids)
     if not ids:
         return {"total": 0, "rows": []}
     marks = db.placeholders(ids)
     rows = db.rows(
-        f"""SELECT mcs.meeting_conducted_status_id AS id, mcs.meeting_id,
-                   r.code AS role_code, COALESCE(u.code, mcs.location_id) AS location_code
+        f"""SELECT mcs.meeting_conducted_status_id AS id, mcs.meeting_id, mcs.location_id,
+                   ml.level_name,
+                   r.code AS role_code,
+                   u.code AS unit_code,
+                   ae.name AS assembly_name, aep.parliament_name AS assembly_parliament_name,
+                   pe.parliament_name AS entity_parliament_name
               FROM meeting_conducted_status mcs
+              JOIN meetings mt ON mt.id = mcs.meeting_id
+              LEFT JOIN meeting_levels ml ON ml.id = mt.meeting_level_id
               LEFT JOIN role r ON r.id = mcs.role_id
               LEFT JOIN unit u ON u.id = mcs.location_id
+              LEFT JOIN assembly ae ON ae.id = mcs.location_id
+              LEFT JOIN parliament aep ON aep.id = ae.parliament_id
+              LEFT JOIN parliament pe ON pe.id = mcs.location_id
              WHERE mcs.meeting_id IN ({marks}) AND {condition}
              ORDER BY mcs.meeting_id, mcs.meeting_conducted_status_id""",
         tuple(ids),
     )
+
+    mandal_locations: dict[str, str] = {}
+    if any(adapt.level_code(r["level_name"]) == "Mandal" for r in rows):
+        mandal_locations = {
+            str(r["location_id"]): r["location_name"] or ""
+            for r in db.rows(_COMMITTEE_LOCATIONS)
+            if r["location_id"] is not None
+        }
+
+    unit_lookup: dict[str, dict[str, str]] = {}
+    if any(adapt.level_code(r["level_name"]) == "Unit" for r in rows):
+        unit_lookup = _unit_lookup()
+
+    def _fields(r: dict[str, Any]) -> dict[str, str]:
+        level = adapt.level_code(r["level_name"])
+        if level == "PC":
+            return {
+                "location": r["entity_parliament_name"] or r["location_id"] or "",
+                "assembly": "", "parliament": "",
+            }
+        if level == "AC":
+            return {
+                "location": r["assembly_name"] or r["location_id"] or "",
+                "assembly": "", "parliament": r["assembly_parliament_name"] or "",
+            }
+        if level == "Mandal":
+            return {
+                "location": mandal_locations.get(str(r["location_id"])) or r["location_id"] or "",
+                "assembly": "", "parliament": "",
+            }
+        info = unit_lookup.get(str(r["location_id"]), {})
+        return {
+            "location": r["unit_code"] or r["location_id"] or "",
+            "assembly": info.get("assembly", ""),
+            "parliament": info.get("parliament", ""),
+        }
+
     return {
         "total": len(rows),
         "rows": [
@@ -318,7 +553,7 @@ def _conducted_status_rows(meeting_ids: str, condition: str) -> dict[str, Any]:
                 "id": r["id"],
                 "meetingId": str(r["meeting_id"]),
                 "role": r["role_code"] or "",
-                "location": r["location_code"] or "",
+                **_fields(r),
             }
             for r in rows
         ],
@@ -330,7 +565,7 @@ def conducted_schedules(
     meeting_ids: str = Query(..., description="Comma-separated meeting ids"),
 ) -> dict[str, Any]:
     """`status IN (1, 2)` — the same rows `units.completed` sums per meeting."""
-    return _schedule_rows(meeting_ids, "status IN (1, 2)")
+    return _schedule_rows(meeting_ids, "s.status IN (1, 2)")
 
 
 @router.get("/schedules/not-updated")
@@ -338,16 +573,34 @@ def not_updated_schedules(
     meeting_ids: str = Query(..., description="Comma-separated meeting ids"),
 ) -> dict[str, Any]:
     """`status = 0` — the same rows `units.notConducted` sums per meeting."""
-    return _schedule_rows(meeting_ids, "status = 0")
+    return _schedule_rows(meeting_ids, "s.status = 0")
 
 
-def _level_roster(level: str) -> list[tuple[str, str]]:
-    """(id, name) pairs for every schedulable location at a level — the same
-    universe `_not_scheduled_counts` measures a meeting against, just with the id kept alongside the
-    name instead of collapsed to a count."""
+def _level_roster(level: str) -> list[tuple[str, str, str, str]]:
+    """(id, name, assembly, parliament) for every schedulable location at a
+    level — the same universe `_not_scheduled_counts` measures a meeting
+    against, just with the id kept alongside the name instead of collapsed
+    to a count.
+
+    Assembly/parliament are only filled where they can be resolved without a
+    `meeting_schedules` row to key off (there is none here — these locations
+    were never scheduled): Unit through the same booth-roll lookup
+    `_schedule_rows` uses, AC through its own `parliament_id`. Mandal has no
+    such row-free path — `/schedule-summary` and `_schedule_rows` resolve a
+    mandal's assembly from the *schedule's* `assembly_id`, which a
+    never-scheduled location has none of, and the enrolled committee
+    roster's own `constituency_name` (from `dakavara_pa`) is a different
+    schema's idea of "assembly" that hasn't been confirmed to line up with
+    it — so it's left blank rather than shown and risk being wrong.
+    """
     if level == "Unit":
+        lookup = _unit_lookup()
         return [
-            (str(r["unit_id"]), r["unit_code"] or "")
+            (
+                str(r["unit_id"]), r["unit_code"] or "",
+                lookup.get(str(r["unit_id"]), {}).get("assembly", ""),
+                lookup.get(str(r["unit_id"]), {}).get("parliament", ""),
+            )
             for r in db.rows(
                 """SELECT DISTINCT UT.id AS unit_id, UT.code AS unit_code
                      FROM booth B
@@ -358,15 +611,22 @@ def _level_roster(level: str) -> list[tuple[str, str]]:
         ]
     if level == "Mandal":
         return [
-            (str(r["location_id"]), r["location_name"] or "")
+            (str(r["location_id"]), r["location_name"] or "", "", "")
             for r in db.rows(_COMMITTEE_LOCATIONS)
             if r["location_id"] is not None
         ]
     if level == "AC":
-        return [(str(r["id"]), r["name"] or "") for r in db.rows("SELECT id, name FROM assembly")]
+        return [
+            (str(r["id"]), r["name"] or "", "", r["parliament_name"] or "")
+            for r in db.rows(
+                """SELECT a.id, a.name, p.parliament_name
+                     FROM assembly a
+                     LEFT JOIN parliament p ON p.id = a.parliament_id"""
+            )
+        ]
     if level == "PC":
         return [
-            (str(r["id"]), r["parliament_name"] or "")
+            (str(r["id"]), r["parliament_name"] or "", "", "")
             for r in db.rows("SELECT id, parliament_name FROM parliament")
         ]
     return []
@@ -403,7 +663,7 @@ def not_scheduled_schedules(
     for r in scheduled:
         scheduled_by_meeting.setdefault(str(r["meeting_id"]), set()).add(str(r["entity_id"]))
 
-    roster_cache: dict[str, list[tuple[str, str]]] = {}
+    roster_cache: dict[str, list[tuple[str, str, str, str]]] = {}
     out_rows: list[dict[str, Any]] = []
     for mrow in meeting_rows:
         mid = str(mrow["id"])
@@ -412,9 +672,55 @@ def not_scheduled_schedules(
             roster_cache[level] = _level_roster(level)
         scheduled_ids = scheduled_by_meeting.get(mid, set())
         out_rows.extend(
-            {"meetingId": mid, "location": name}
-            for loc_id, name in roster_cache[level]
+            {"meetingId": mid, "location": name, "assembly": assembly, "parliament": parliament}
+            for loc_id, name, assembly, parliament in roster_cache[level]
             if loc_id not in scheduled_ids
+        )
+    return {"total": len(out_rows), "rows": out_rows}
+
+
+@router.get("/schedules/pc-never-updated")
+def pc_never_updated_schedules(
+    meeting_ids: str = Query(..., description="Comma-separated meeting ids"),
+) -> dict[str, Any]:
+    """Roster locations with no `meeting_conducted_status` row at all for a
+    meeting — the same figure PC Status' `notUpdated` sums per meeting,
+    drilled down to rows. The PC-side twin of `/schedules/not-scheduled`:
+    same roster (`_level_roster` is shared with it), just covered-ids read
+    off `meeting_conducted_status.location_id` instead of
+    `meeting_schedules.entity_id`.
+    """
+    ids = _ids(meeting_ids)
+    if not ids:
+        return {"total": 0, "rows": []}
+    marks = db.placeholders(ids)
+    meeting_rows = db.rows(
+        f"""SELECT m.id, l.level_name
+              FROM meetings m
+              LEFT JOIN meeting_levels l ON l.id = m.meeting_level_id
+             WHERE m.id IN ({marks})""",
+        tuple(ids),
+    )
+    covered = db.rows(
+        f"SELECT meeting_id, location_id FROM meeting_conducted_status WHERE meeting_id IN ({marks})",
+        tuple(ids),
+    )
+    covered_by_meeting: dict[str, set[str]] = {}
+    for r in covered:
+        covered_by_meeting.setdefault(str(r["meeting_id"]), set()).add(str(r["location_id"]))
+
+    roster_cache: dict[str, list[tuple[str, str, str, str]]] = {}
+    out_rows: list[dict[str, Any]] = []
+    for mrow in meeting_rows:
+        mid = str(mrow["id"])
+        level = adapt.level_code(mrow["level_name"])
+        if level not in roster_cache:
+            roster_cache[level] = _level_roster(level)
+        covered_ids = covered_by_meeting.get(mid, set())
+        out_rows.extend(
+            {"meetingId": mid, "location": name, "assembly": assembly, "parliament": parliament}
+            for loc_id, name, assembly, parliament in roster_cache[level]
+            if loc_id not in covered_ids
         )
     return {"total": len(out_rows), "rows": out_rows}
 
@@ -520,24 +826,25 @@ def schedule_summary(meeting_id: str) -> dict[str, Any]:
     instead (same fix as the invitee/attendance join elsewhere in this file)
     so each target table's own primary key still does the work.
 
-    The panel doesn't send a per-row `assembly` — the caller already knows
-    the meeting's level (it's the tier the user picked to get here), so the
-    UI reads that off its own `level` prop rather than a value repeated
-    identically on every row. At AC level it does still send `parliament`
-    (which parliament each assembly sits in) and at Mandal and Unit level
-    `assembly` (which AC each mandal/town/division/unit sits in) — all
-    genuinely vary row to row. The Mandal one comes straight off
-    `s.assembly_id`, the schedule's own column, not off `entity_id` —
-    `entity_id`'s id space collides with `assembly.id` too (mandal 141 and
-    assembly 141 both exist), so it can't be trusted to resolve the AC on its
-    own the way it resolves the unit. `unit` carries no `assembly_id` of its
-    own that's safe to trust either, so the Unit one goes through `booth` —
-    the same (assembly, unit) pairing `/api/units` already counts from,
-    scoped to the live roll (`config.UNIT_PUBLICATION_ID`). That map is
-    fetched once as its own query and applied in Python rather than joined
-    per row: `booth` has no index MySQL can use against a `DISTINCT`
-    subquery, so joining it turned into a nested scan of ~46k booth rows for
-    every one of a meeting's schedule rows and never finished.
+    The panel doesn't send a per-row `assembly`/`parliament` for the tier the
+    caller already knows it's looking at — the meeting's own level is the
+    tier the user picked to get here, so a PC-level row carries neither (it
+    IS a parliament) and an AC-level row carries no `assembly` (it IS one) —
+    only `parliament`, which parliament that assembly sits in. Mandal and
+    Unit rows carry both, since neither is redundant with the row's own
+    `location`. The Mandal ones come off `s.assembly_id`, the schedule's own
+    column, not off `entity_id` — `entity_id`'s id space collides with
+    `assembly.id` too (mandal 141 and assembly 141 both exist), so it can't
+    be trusted to resolve the AC on its own the way it resolves the unit.
+    `unit` carries no `assembly_id` of its own that's safe to trust either,
+    so the Unit ones go through `booth` via `_unit_lookup()` — the same
+    (assembly, unit) pairing `/api/units` already counts from, scoped to the
+    live roll (`config.UNIT_PUBLICATION_ID`), plus that assembly's own
+    `parliament_id`. That map is fetched once as its own query and applied
+    in Python rather than joined per row: `booth` has no index MySQL can use
+    against a `DISTINCT` subquery, so joining it turned into a nested scan of
+    ~46k booth rows for every one of a meeting's schedule rows and never
+    finished.
 
     At Mandal level, `location` prefers the enrolled committee roster behind
     `/api/committees/mandal-town-division` (the "Mandal / Town / Division
@@ -556,7 +863,7 @@ def schedule_summary(meeting_id: str) -> dict[str, Any]:
                   u.id AS unit_id, u.code AS unit_code, ae.name AS entity_assembly_name,
                   pe.parliament_name AS entity_parliament_name,
                   pac.parliament_name AS ac_parliament_name,
-                  ma.name AS mandal_assembly_name,
+                  ma.name AS mandal_assembly_name, map.parliament_name AS mandal_parliament_name,
                   md.name AS mandal_name, tn.town_name,
                   s.status, s.updated_at, c.is_conducted,
                   c.meeting_conducted_status_id, mr.remarks_category_id, mr.remarks
@@ -568,6 +875,7 @@ def schedule_summary(meeting_id: str) -> dict[str, Any]:
              LEFT JOIN parliament pe ON pe.id = CAST(s.entity_id AS CHAR)
              LEFT JOIN parliament pac ON pac.id = ae.parliament_id
              LEFT JOIN assembly ma ON ma.id = CAST(s.assembly_id AS CHAR)
+             LEFT JOIN parliament map ON map.id = ma.parliament_id
              LEFT JOIN mandal md ON md.id = CAST(s.entity_id AS CHAR)
              LEFT JOIN town tn ON tn.id = CAST(s.entity_id AS CHAR)
              LEFT JOIN meeting_conducted_status c
@@ -579,18 +887,9 @@ def schedule_summary(meeting_id: str) -> dict[str, Any]:
         (meeting_id,),
     )
 
-    unit_assembly: dict[str, str] = {}
+    unit_lookup: dict[str, dict[str, str]] = {}
     if any(adapt.level_code(r["level_name"]) == "Unit" for r in rows):
-        unit_assembly = {
-            str(r["unit_id"]): r["assembly_code"] or ""
-            for r in db.rows(
-                """SELECT DISTINCT UT.id AS unit_id, AC.code AS assembly_code
-                     FROM booth B
-                     JOIN assembly AC ON B.assembly_id = AC.id AND B.publication_id = %s
-                     JOIN unit UT ON B.unit_id = UT.id""",
-                (config.UNIT_PUBLICATION_ID,),
-            )
-        }
+        unit_lookup = _unit_lookup()
 
     mandal_locations: dict[str, str] = {}
     if any(adapt.level_code(r["level_name"]) == "Mandal" for r in rows):
@@ -615,13 +914,20 @@ def schedule_summary(meeting_id: str) -> dict[str, Any]:
             location = r["unit_code"] or r["location_text"] or ""
         if level == "Mandal":
             assembly = r["mandal_assembly_name"] or ""
+            parliament = r["mandal_parliament_name"] or ""
         elif level == "Unit":
-            assembly = unit_assembly.get(str(r["unit_id"]), "")
+            info = unit_lookup.get(str(r["unit_id"]), {})
+            assembly = info.get("assembly", "")
+            parliament = info.get("parliament", "")
+        elif level == "AC":
+            assembly = ""
+            parliament = r["ac_parliament_name"] or ""
         else:
             assembly = ""
+            parliament = ""
         return {
             "id": r["id"],
-            "parliament": r["ac_parliament_name"] or "" if level == "AC" else "",
+            "parliament": parliament,
             "assembly": assembly,
             "location": location,
             "appConducted": r["status"] in (1, 2),
@@ -684,13 +990,15 @@ def get_meeting(meeting_id: str) -> dict[str, Any]:
     row = db.one(_MEETING_COLS + " WHERE m.id = %s", (meeting_id,))
     if row is None:
         raise HTTPException(status_code=404, detail="Unknown meeting")
-    agg_all, not_scheduled_all = db.parallel(
+    agg_all, not_scheduled_all, pc_not_updated_all = db.parallel(
         lambda: _aggregates([str(row["id"])]),
         lambda: _not_scheduled_counts([row]),
+        lambda: _pc_not_updated_counts([row]),
     )
     agg = agg_all.get(str(row["id"]), {})
     not_scheduled = not_scheduled_all.get(str(row["id"]), 0)
-    return adapt.meeting(row, agg, not_scheduled)
+    pc_not_updated = pc_not_updated_all.get(str(row["id"]), 0)
+    return adapt.meeting(row, agg, not_scheduled, pc_not_updated)
 
 
 _MEMBER_COLS = f"""

@@ -39,18 +39,21 @@ def _iso(d: date | None) -> str | None:
     return d.isoformat() if d else None
 
 
-def meeting(row: dict[str, Any], agg: dict[str, Any], not_scheduled: int = 0) -> dict[str, Any]:
+def meeting(
+    row: dict[str, Any], agg: dict[str, Any], not_scheduled: int = 0, pc_not_updated: int = 0
+) -> dict[str, Any]:
     """One meeting card.
 
     ``agg`` carries the counted figures for this meeting: invitees, attendees,
     attendance records, the schedule funnel, resolutions, remarks taken, the
     PC in-charge's real conducted/not-conducted split, and their remark count.
-    ``not_scheduled`` is already the finished figure — how many of this
-    meeting's own level's roster locations (units, mandals/towns, ACs or PCs)
-    have no `meeting_schedules` row at all — computed by the caller rather
+    ``not_scheduled`` and ``pc_not_updated`` are already the finished figures
+    — how many of this meeting's own level's roster locations (units,
+    mandals/towns, ACs or PCs) have no `meeting_schedules` row, respectively
+    no `meeting_conducted_status` row, at all — computed by the caller rather
     than a flat roster size here, since a plain "roster size minus this
-    meeting's schedule count" silently undercounts whenever a meeting also
-    schedules a location outside the roster.
+    meeting's own row count" silently undercounts whenever a meeting also
+    carries a row outside the roster.
     """
     invitees = num(agg.get("invitees"))
     attendees = num(agg.get("attendees"))
@@ -62,7 +65,6 @@ def meeting(row: dict[str, Any], agg: dict[str, Any], not_scheduled: int = 0) ->
 
     pc_total = num(agg.get("pcTotal"))
     pc_conducted = num(agg.get("pcConducted"))
-    pc_null = num(agg.get("pcNull"))
 
     return {
         "id": str(row["id"]),
@@ -98,18 +100,21 @@ def meeting(row: dict[str, Any], agg: dict[str, Any], not_scheduled: int = 0) ->
         # scheduled", so folding this in would break `total = started +
         # notConducted`, the identity `StateBand` draws the funnel from.
         "notScheduled": not_scheduled,
-        # `meeting_conducted_status.is_conducted`: 'Y' is conducted, NULL (and
-        # 'N') is not — the real PC in-charge feed, not the schedule heuristic.
-        # A `GROUP BY` never yields a zero-count group, so `pc_total == 0` can
-        # only mean this meeting has no rows there at all — `None` rather than
-        # a fake 0/0, so the UI can tell "not tracked yet" from "tracked, zero
-        # conducted so far".
+        # `meeting_conducted_status.is_conducted`: 'Y' is conducted, anything
+        # else — NULL, and 'N' on the rare row that carries one — is not, a
+        # strict two-state read of the real PC in-charge feed, not the
+        # schedule heuristic. A `GROUP BY` never yields a zero-count group,
+        # so `pc_total == 0` can only mean this meeting has no rows there at
+        # all — `None` rather than a fake 0/0, so the UI can tell "not
+        # tracked yet" from "tracked, zero conducted so far".
         "pc": None if pc_total == 0 else {
             "total": pc_total,
             "conducted": pc_conducted,
             "notConducted": pc_total - pc_conducted,
-            # NULL specifically — never touched, distinct from an explicit 'N'.
-            "notUpdated": pc_null,
+            # Roster locations with no `meeting_conducted_status` row at all
+            # — the PC-side twin of `notScheduled` above, outside `total` on
+            # purpose the same way `notScheduled` sits outside `units.total`.
+            "notUpdated": pc_not_updated,
         },
         # Rows in `meeting_remark` carrying real text, joined off the PC
         # in-charge's own conducted-status rows above.

@@ -46,7 +46,8 @@ def test_meeting_split_and_funnel():
         {"id": 15, "title": "t", "meeting_date": None, "level_name": "AC"},
         {"invitees": 100, "attendees": 40, "attendanceRecords": 250,
          "units": 10, "unitsCompleted": 4, "resolutions": 3, "feedbackTaken": 15,
-         "pcTotal": 9, "pcConducted": 3, "pcNull": 4},
+         "pcTotal": 9, "pcConducted": 3},
+        pc_not_updated=7,
     )
     assert (m["attendees"], m["absent"]) == (40, 60)
     # the attendance-record count exceeds the invitee list and must never be
@@ -56,12 +57,14 @@ def test_meeting_split_and_funnel():
     assert m["units"]["notConducted"] == 6
     assert (m["feedbackPending"], m["completion"]) == (45, 25)
     # NULL and 'N' rows both read as not conducted; conducted + notConducted
-    # must always foot back to the total row count.
+    # must always foot back to the total *row* count — `pcTotal` counts only
+    # locations that already have a `meeting_conducted_status` row.
     assert (m["pc"]["conducted"], m["pc"]["notConducted"]) == (3, 6)
     assert m["pc"]["conducted"] + m["pc"]["notConducted"] == m["pc"]["total"]
-    # `notUpdated` is NULL alone — the 2 'N' rows (6 not-conducted - 4 null)
-    # are an explicit choice, not "never touched", and must stay out of it.
-    assert m["pc"]["notUpdated"] == 4
+    # `notUpdated` is the caller-supplied roster-absence figure, not derived
+    # from `agg` at all — a location with no conducted-status row is outside
+    # `pcTotal` the same way a never-scheduled one is outside `units.total`.
+    assert m["pc"]["notUpdated"] == 7
 
 
 def test_meeting_includes_pc_remarks_count():
@@ -69,7 +72,7 @@ def test_meeting_includes_pc_remarks_count():
         {"id": 15, "title": "t", "meeting_date": None, "level_name": "AC"},
         {"invitees": 100, "attendees": 40, "attendanceRecords": 250,
          "units": 10, "unitsCompleted": 4, "resolutions": 3, "feedbackTaken": 15,
-         "pcTotal": 9, "pcConducted": 3, "pcNull": 4, "pcRemarks": 7},
+         "pcTotal": 9, "pcConducted": 3, "pcRemarks": 7},
     )
     assert m["pcRemarks"] == 7
 
@@ -329,9 +332,11 @@ def test_pc_not_completed_schedules_matches_the_pc_notconducted_sum():
 
 
 @live
-def test_pc_not_updated_schedules_matches_the_pc_notupdated_sum():
-    """`is_conducted IS NULL` row-level detail must foot to the summed figure."""
-    data = client.get("/api/meetings/schedules/pc-not-updated?meeting_ids=13,22,26").json()
+def test_pc_never_updated_schedules_matches_the_pc_notupdated_sum():
+    """Roster locations with no `meeting_conducted_status` row at all must
+    foot to the summed `pc.notUpdated` figure — the PC-side twin of
+    `test_units_total_matches_row_count`'s App-side check."""
+    data = client.get("/api/meetings/schedules/pc-never-updated?meeting_ids=13,22,26").json()
     meetings = {
         m["id"]: m for m in client.get("/api/meetings?from=2026-01-01&to=2026-12-31").json()
     }
