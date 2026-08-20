@@ -3,7 +3,3 @@ __pycache__/
 venv/
 .venv/
 node_modules/
-
-# .env files hold real credentials (DB passwords, AWS keys) and must not be
-# committed. Copy .env.example to .env locally instead.
-*/.env

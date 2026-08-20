@@ -339,46 +339,6 @@
         ]
       }
     },
-    "/portal-frontend-code/getProposalConstituencyReservation": {
-      "get": {
-        "summary": "[Portal (Local Body Elections)] Get Proposal Constituency Reservation",
-        "operationId": "Portal_Local_Body_Elections__get_proposal_constituency_reservation_getProposalConstituencyReservation_get",
-        "parameters": [
-          {
-            "name": "proposal_constituency_id",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "integer",
-              "title": "Proposal Constituency Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Portal_Local_Body_Elections__HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Portal (Local Body Elections) - API"
-        ]
-      }
-    },
     "/portal-frontend-code/checkProposalPositionAvailability": {
       "get": {
         "summary": "[Portal (Local Body Elections)] Check Proposal Position Availability",
@@ -464,12 +424,12 @@
         "operationId": "Portal_Local_Body_Elections__cadre_search_cadreSearch_get",
         "parameters": [
           {
-            "name": "proposal_constituency_id",
+            "name": "proposal_position_id",
             "in": "query",
             "required": true,
             "schema": {
               "type": "integer",
-              "title": "Proposal Constituency Id"
+              "title": "Proposal Position Id"
             }
           },
           {
@@ -659,7 +619,7 @@
     "/portal-frontend-code/getDashboardPositionsByConstituencyId": {
       "get": {
         "summary": "[Portal (Local Body Elections)] Get Dashboard Positions By Constituency Id",
-        "description": "Every proposal_position under one assembly, across every election type and every\nlocal body it resolves to (mandal or town) \u2014 the Dashboard screen's whole picture in\none call. Without this, the same data would take an getProposalElectionTypes election types x getMandalsInAConstituency/getTownsInAConstituency\nmandals/towns x getProposalConstituenciesByTehsilId/getProposalConstituenciesByTownId x getProposalPositionsOverviewByProposalConstituencyId fan-out in the browser: one request per (election type,\nmandal-or-town) pair just to find which locations exist, then one more per location.\n\nLEFT OUTER JOIN to proposal_candidate, not INNER like getProposalPositionsWithCandidates: getProposalPositionsWithCandidates must hide a position\nnobody was proposed for, but this screen's \"Not Started\" is exactly that position.\nUnscoped by the caller's own access grants (unlike getProposalPositionsWithCandidates) \u2014 getProposalConstituenciesByTehsilId/getProposalConstituenciesByTownId already let any\nconstituency_id through once the frontend has drilled down to it, and by the time the\nDashboard calls this it has already picked the assembly off getUserAccessAssemblies's own list.\n\nAlso carries `tehsil_id`/`town_id` (exactly one set per row, the other NULL) \u2014 getProposalConstituenciesByTehsilId/getProposalConstituenciesByTownId's\nown inputs \u2014 so a caller that already has one of these rows can jump the wizard\nstraight to a location's Add Members search without re-deriving it through getMandalsInAConstituency/getTownsInAConstituency.",
+        "description": "Every proposal_position under one assembly, across every election type and every\nlocal body it resolves to (mandal or town) \u2014 the Dashboard screen's whole picture in\none call. Without this, the same data would take an getProposalElectionTypes election types x getMandalsInAConstituency/getTownsInAConstituency\nmandals/towns x getProposalConstituenciesByTehsilId/getProposalConstituenciesByTownId x getProposalPositionsOverviewByProposalConstituencyId fan-out in the browser: one request per (election type,\nmandal-or-town) pair just to find which locations exist, then one more per location.\n\nLEFT OUTER JOIN to proposal_candidate, not INNER like getProposalPositionsWithCandidates: getProposalPositionsWithCandidates must hide a position\nnobody was proposed for, but this screen's \"Not Started\" is exactly that position.\nUnscoped by the caller's own access grants (unlike getProposalPositionsWithCandidates) \u2014 getProposalConstituenciesByTehsilId/getProposalConstituenciesByTownId already let any\nconstituency_id through once the frontend has drilled down to it, and by the time the\nDashboard calls this it has already picked the assembly off getUserAccessAssemblies's own list.\n\nAlso carries `tehsil_id`/`town_id` (exactly one set per row, the other NULL) \u2014 getProposalConstituenciesByTehsilId/getProposalConstituenciesByTownId's\nown inputs \u2014 so a caller that already has one of these rows can jump the wizard\nstraight to a location's Add Members search without re-deriving it through getMandalsInAConstituency/getTownsInAConstituency.\n\nAlso carries `reservation_type`, off proposal_position.constituency_reservation_id \u2014 per\nrole rather than per local body, since that is where a reservation is actually set, and\nNULL when the role has none \u2014 so the Dashboard's by-location table can show it without\na second call per row.\n\nAlso carries `started_time` off proposal_position itself \u2014 NULL means that role has not\nhad a candidate proposed for it yet, non-NULL means it has (assignProposalCandidate stamps it on the\nfirst proposal). This is the Dashboard's own Proposal Status column, per role rather\nthan per local body \u2014 a location holding more than one role rolls its own up from these.",
         "operationId": "Portal_Local_Body_Elections__get_dashboard_positions_by_constituency_id_getDashboardPositionsByConstituencyId_get",
         "parameters": [
           {
@@ -700,7 +660,7 @@
     "/portal-frontend-code/getDashboardCandidatesByStatus": {
       "get": {
         "summary": "[Portal (Local Body Elections)] Get Dashboard Candidates By Status",
-        "description": "The candidate list behind one Dashboard stat tile (Proposed or Confirmed): every\nactive proposal_candidate at proposal_status_id, under one assembly and election\ntype \u2014 the same (assembly, election type) scope getDashboardPositionsByConstituencyId's tiles are already summed over,\ndrilled down to the rows themselves rather than the count.\n\n`nomination_file_path` is a correlated subquery over election_candidate /\nelection_candidate_file (file_type='Pdf', is_deleted not 'Y') rather than a JOIN: a\ncandidate has at most one live election_candidate row in this flow, but a JOIN would\nstill multiply the candidate row if that ever stopped being true, which would desync\nthis list's count from getDashboardPositionsByConstituencyId's. NULL means no PDF has been uploaded for this candidate\nyet, which the caller reads as \"nomination in progress\" rather than \"not confirmed\".\n`is_deleted` is checked as \"not 'Y'\" rather than \"= 'N'\" because both tables leave it\nNULL on insert rather than defaulting it, and NULL = 'N' is NULL (never true) in SQL \u2014\nthat comparison would hide every row nobody has explicitly soft-deleted.",
+        "description": "The candidate list behind one Dashboard stat tile (Proposed or Confirmed): every\nactive proposal_candidate at proposal_status_id, under one assembly and election\ntype \u2014 the same (assembly, election type) scope getDashboardPositionsByConstituencyId's tiles are already summed over,\ndrilled down to the rows themselves rather than the count.\n\n`nomination_file_path` is a correlated subquery over election_candidate /\nelection_candidate_file (file_type='Pdf', is_deleted not 'Y') rather than a JOIN: a\ncandidate has at most one live election_candidate row in this flow, but a JOIN would\nstill multiply the candidate row if that ever stopped being true, which would desync\nthis list's count from getDashboardPositionsByConstituencyId's. NULL means no PDF has been uploaded for this candidate\nyet, which the caller reads as \"nomination in progress\" rather than \"not confirmed\".\n`is_deleted` is checked as \"not 'Y'\" rather than \"= 'N'\" because both tables leave it\nNULL on insert rather than defaulting it, and NULL = 'N' is NULL (never true) in SQL \u2014\nthat comparison would hide every row nobody has explicitly soft-deleted.\n\nAlso carries `gender`, `category_name`/`caste_name` (the same caste join cadreSearch uses) and\n`reservation_type` for the position's own local body \u2014 so this drill-down table can show\nthem without a second call per row.",
         "operationId": "Portal_Local_Body_Elections__get_dashboard_candidates_by_status_getDashboardCandidatesByStatus_get",
         "parameters": [
           {
@@ -840,7 +800,7 @@
     "/portal-frontend-code/getCadreScores": {
       "get": {
         "summary": "[Portal (Local Body Elections)] Get Cadre Scores",
-        "description": "Performance score, its per-category breakdown and the leader feedback behind it,\nfor one or more membership ids \u2014 one candidate card and the whole compare table are\nthe same payload, so they are the same call.\n\nLookup-first: a membership id whose report row already exists is served straight\nfrom the table, and the rating procedures (seconds per id) run only for the rest.",
+        "description": "Performance score and its per-category breakdown, for one or more membership ids \u2014\nthe candidate card's score badge and its Member Since / Renewals fields.\n\nLookup-first: a membership id whose report row already exists is served straight\nfrom the table, and the rating procedures (seconds per id) run only for the rest.",
         "operationId": "Portal_Local_Body_Elections__get_cadre_scores_getCadreScores_get",
         "parameters": [
           {
@@ -3134,6 +3094,1304 @@
           }
         }
       }
+    },
+    "/pc-meetings/api/assemblies": {
+      "get": {
+        "tags": [
+          "PC Meetings - assemblies"
+        ],
+        "summary": "[PC Meetings] List Assemblies",
+        "description": "Every assembly constituency in the state, with its total count.",
+        "operationId": "PC_Meetings__list_assemblies_api_assemblies_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response List Assemblies Api Assemblies Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pc-meetings/api/assemblies/parliaments": {
+      "get": {
+        "tags": [
+          "PC Meetings - assemblies"
+        ],
+        "summary": "[PC Meetings] List Parliaments",
+        "description": "Every parliament constituency in the state, with its total count.",
+        "operationId": "PC_Meetings__list_parliaments_api_assemblies_parliaments_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response List Parliaments Api Assemblies Parliaments Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pc-meetings/api/committees/mandal-town-division": {
+      "get": {
+        "tags": [
+          "PC Meetings - committees"
+        ],
+        "summary": "[PC Meetings] Mandal Town Division",
+        "description": "Every enrolled Mandal/Town/Division committee, with its total count.",
+        "operationId": "PC_Meetings__mandal_town_division_api_committees_mandal_town_division_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Mandal Town Division Api Committees Mandal Town Division Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pc-meetings/api/meetings": {
+      "get": {
+        "tags": [
+          "PC Meetings - meetings"
+        ],
+        "summary": "[PC Meetings] List Meetings",
+        "description": "Committee meetings held in a period, oldest first.",
+        "operationId": "PC_Meetings__list_meetings_api_meetings_get",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "YYYY-MM-DD",
+              "title": "From"
+            },
+            "description": "YYYY-MM-DD"
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "YYYY-MM-DD",
+              "title": "To"
+            },
+            "description": "YYYY-MM-DD"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  },
+                  "title": "Response List Meetings Api Meetings Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PC_Meetings__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pc-meetings/api/meetings/schedules/conducted": {
+      "get": {
+        "tags": [
+          "PC Meetings - meetings"
+        ],
+        "summary": "[PC Meetings] Conducted Schedules",
+        "description": "`status IN (1, 2)` \u2014 the same rows `units.completed` sums per meeting.",
+        "operationId": "PC_Meetings__conducted_schedules_api_meetings_schedules_conducted_get",
+        "parameters": [
+          {
+            "name": "meeting_ids",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Comma-separated meeting ids",
+              "title": "Meeting Ids"
+            },
+            "description": "Comma-separated meeting ids"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Conducted Schedules Api Meetings Schedules Conducted Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PC_Meetings__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pc-meetings/api/meetings/schedules/not-updated": {
+      "get": {
+        "tags": [
+          "PC Meetings - meetings"
+        ],
+        "summary": "[PC Meetings] Not Updated Schedules",
+        "description": "`status = 0` \u2014 the same rows `units.notConducted` sums per meeting.",
+        "operationId": "PC_Meetings__not_updated_schedules_api_meetings_schedules_not_updated_get",
+        "parameters": [
+          {
+            "name": "meeting_ids",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Comma-separated meeting ids",
+              "title": "Meeting Ids"
+            },
+            "description": "Comma-separated meeting ids"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Not Updated Schedules Api Meetings Schedules Not Updated Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PC_Meetings__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pc-meetings/api/meetings/schedules/not-scheduled": {
+      "get": {
+        "tags": [
+          "PC Meetings - meetings"
+        ],
+        "summary": "[PC Meetings] Not Scheduled Schedules",
+        "description": "Roster locations with no `meeting_schedules` row at all for a meeting \u2014\nthe same figure `notScheduled` sums per meeting, drilled down to rows.\n\nUnlike every other slice in this file, this one has no `meeting_schedules`\nrow to select \u2014 a location that was never scheduled has no row to find.\nIt's built the other way round instead: the level's full roster, minus\nwhichever of those ids this meeting's `entity_id`s do cover.",
+        "operationId": "PC_Meetings__not_scheduled_schedules_api_meetings_schedules_not_scheduled_get",
+        "parameters": [
+          {
+            "name": "meeting_ids",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Comma-separated meeting ids",
+              "title": "Meeting Ids"
+            },
+            "description": "Comma-separated meeting ids"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Not Scheduled Schedules Api Meetings Schedules Not Scheduled Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PC_Meetings__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pc-meetings/api/meetings/schedules/pc-completed": {
+      "get": {
+        "tags": [
+          "PC Meetings - meetings"
+        ],
+        "summary": "[PC Meetings] Pc Completed Schedules",
+        "description": "`is_conducted = 'Y'` \u2014 the same rows PC Status' Completed sums.",
+        "operationId": "PC_Meetings__pc_completed_schedules_api_meetings_schedules_pc_completed_get",
+        "parameters": [
+          {
+            "name": "meeting_ids",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Comma-separated meeting ids",
+              "title": "Meeting Ids"
+            },
+            "description": "Comma-separated meeting ids"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Pc Completed Schedules Api Meetings Schedules Pc Completed Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PC_Meetings__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pc-meetings/api/meetings/schedules/pc-not-completed": {
+      "get": {
+        "tags": [
+          "PC Meetings - meetings"
+        ],
+        "summary": "[PC Meetings] Pc Not Completed Schedules",
+        "description": "`is_conducted IS NULL OR 'N'` \u2014 PC Status' Not completed, the combined\nfigure. Broader than `/pc-not-updated`, which is NULL alone.",
+        "operationId": "PC_Meetings__pc_not_completed_schedules_api_meetings_schedules_pc_not_completed_get",
+        "parameters": [
+          {
+            "name": "meeting_ids",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Comma-separated meeting ids",
+              "title": "Meeting Ids"
+            },
+            "description": "Comma-separated meeting ids"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Pc Not Completed Schedules Api Meetings Schedules Pc Not Completed Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PC_Meetings__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pc-meetings/api/meetings/schedules/pc-not-updated": {
+      "get": {
+        "tags": [
+          "PC Meetings - meetings"
+        ],
+        "summary": "[PC Meetings] Pc Not Updated Schedules",
+        "description": "`is_conducted IS NULL` \u2014 never touched, kept apart from an explicit 'N'.",
+        "operationId": "PC_Meetings__pc_not_updated_schedules_api_meetings_schedules_pc_not_updated_get",
+        "parameters": [
+          {
+            "name": "meeting_ids",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Comma-separated meeting ids",
+              "title": "Meeting Ids"
+            },
+            "description": "Comma-separated meeting ids"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Pc Not Updated Schedules Api Meetings Schedules Pc Not Updated Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PC_Meetings__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pc-meetings/api/meetings/schedules/pc-remarks": {
+      "get": {
+        "tags": [
+          "PC Meetings - meetings"
+        ],
+        "summary": "[PC Meetings] Pc Remarks Schedules",
+        "description": "Every non-empty PC remark \u2014 the same rows `pcRemarks` sums per meeting.",
+        "operationId": "PC_Meetings__pc_remarks_schedules_api_meetings_schedules_pc_remarks_get",
+        "parameters": [
+          {
+            "name": "meeting_ids",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Comma-separated meeting ids",
+              "title": "Meeting Ids"
+            },
+            "description": "Comma-separated meeting ids"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Pc Remarks Schedules Api Meetings Schedules Pc Remarks Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PC_Meetings__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pc-meetings/api/meetings/{meeting_id}/schedule-summary": {
+      "get": {
+        "tags": [
+          "PC Meetings - meetings"
+        ],
+        "summary": "[PC Meetings] Schedule Summary",
+        "description": "The App & PC summary panel's real row detail \u2014 one row per schedule.\n\n`meeting_schedules.entity_id` and `meeting_conducted_status.location_id`\nare the same id: confirmed 1:1 for meeting 22's 2,860 rows, so the join\ncarries no fan-out. A location with no matching row there reads as not\ncompleted, the same as an explicit NULL \u2014 there is nothing to mark it\ncomplete with either way. `meeting_remark` carries at most one row per\n`meeting_conducted_status_id` \u2014 the save endpoint updates in place rather\nthan versioning \u2014 so the join to it is 1:1 too.\n\n`entity_id` is a `unit.id` at Unit level, an `assembly.id` at AC level, a\n`parliament.id` at PC level, and a `mandal.id` or `town.id` at Mandal\nlevel \u2014 the id spaces overlap (assembly 207 and unit 207 both exist), so\nwhich table it resolves against has to follow the meeting's own level\nrather than \"whichever join isn't null\". Blindly joining `unit` for every\nrow, as this used to, silently matched AC-, PC- and Mandal-level rows\nagainst an unrelated unit and showed its code as the location \u2014 a mandal\ncommittee is its own thing, not the `unit` rows nested inside it, so\n`mandal`/`town` (the two don't collide with each other) resolve it now.\n\n`entity_id`/`assembly_id` are `int`/`bigint`; every table above (plus\n`meeting_conducted_status.location_id`) keys off a `varchar` id. Left as\n`x.id = s.entity_id`, MySQL casts the varchar side to compare, which\ncan't use that column's index \u2014 a full table scan per schedule row, for\nevery one of these joins. The cast goes on the `meeting_schedules` side\ninstead (same fix as the invitee/attendance join elsewhere in this file)\nso each target table's own primary key still does the work.\n\nThe panel doesn't send a per-row `assembly` \u2014 the caller already knows\nthe meeting's level (it's the tier the user picked to get here), so the\nUI reads that off its own `level` prop rather than a value repeated\nidentically on every row. At AC level it does still send `parliament`\n(which parliament each assembly sits in) and at Mandal and Unit level\n`assembly` (which AC each mandal/town/division/unit sits in) \u2014 all\ngenuinely vary row to row. The Mandal one comes straight off\n`s.assembly_id`, the schedule's own column, not off `entity_id` \u2014\n`entity_id`'s id space collides with `assembly.id` too (mandal 141 and\nassembly 141 both exist), so it can't be trusted to resolve the AC on its\nown the way it resolves the unit. `unit` carries no `assembly_id` of its\nown that's safe to trust either, so the Unit one goes through `booth` \u2014\nthe same (assembly, unit) pairing `/api/units` already counts from,\nscoped to the live roll (`config.UNIT_PUBLICATION_ID`). That map is\nfetched once as its own query and applied in Python rather than joined\nper row: `booth` has no index MySQL can use against a `DISTINCT`\nsubquery, so joining it turned into a nested scan of ~46k booth rows for\nevery one of a meeting's schedule rows and never finished.\n\nAt Mandal level, `location` prefers the enrolled committee roster behind\n`/api/committees/mandal-town-division` (the \"Mandal / Town / Division\nLevel \u00b7 Total\" card) over `mandal`/`town`: those two mytdp tables only\ncover 84% of this tier's schedule rows, while the roster \u2014 filtered the\nsame way the Total card is (`tdp_committee_enrollment_id = 4`, levels\n5/7/9, `tdp_basic_committee_id = 1`) \u2014 covers 99.75% and, within that\nfiltered set, never has two different committees sharing one location id\n(checked directly; the *unfiltered* `tehsil`/`local_election_body`\ntables do collide, which is why this endpoint doesn't query them\nunfiltered). `mandal`/`town` remain the fallback for the handful of rows\nthe roster doesn't cover.",
+        "operationId": "PC_Meetings__schedule_summary_api_meetings__meeting_id__schedule_summary_get",
+        "parameters": [
+          {
+            "name": "meeting_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Meeting Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Schedule Summary Api Meetings  Meeting Id  Schedule Summary Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PC_Meetings__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pc-meetings/api/meetings/conducted-status/{status_id}/remark": {
+      "put": {
+        "tags": [
+          "PC Meetings - meetings"
+        ],
+        "summary": "[PC Meetings] Save Conducted Remark",
+        "description": "Record (or clear) the PC in-charge's remark against one conducted-status row.\n\n`meeting_remark` is exclusive to this app and carries no soft-delete column\nthe way `feedback_comment` does, so a save just updates the one row for this\nstatus id in place \u2014 the same row a fresh `schedule-summary` fetch reads.",
+        "operationId": "PC_Meetings__save_conducted_remark_api_meetings_conducted_status__status_id__remark_put",
+        "parameters": [
+          {
+            "name": "status_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Status Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PC_Meetings__ConductedRemarkIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Save Conducted Remark Api Meetings Conducted Status  Status Id  Remark Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PC_Meetings__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pc-meetings/api/meetings/{meeting_id}": {
+      "get": {
+        "tags": [
+          "PC Meetings - meetings"
+        ],
+        "summary": "[PC Meetings] Get Meeting",
+        "operationId": "PC_Meetings__get_meeting_api_meetings__meeting_id__get",
+        "parameters": [
+          {
+            "name": "meeting_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Meeting Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Get Meeting Api Meetings  Meeting Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PC_Meetings__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pc-meetings/api/meetings/{meeting_id}/members": {
+      "get": {
+        "tags": [
+          "PC Meetings - meetings"
+        ],
+        "summary": "[PC Meetings] List Members",
+        "description": "A page of this meeting's invitees, absentees first.",
+        "operationId": "PC_Meetings__list_members_api_meetings__meeting_id__members_get",
+        "parameters": [
+          {
+            "name": "meeting_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Meeting Id"
+            }
+          },
+          {
+            "name": "ac",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Assembly name, exact match",
+              "title": "Ac"
+            },
+            "description": "Assembly name, exact match"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 3000,
+              "minimum": 1,
+              "default": 3000,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response List Members Api Meetings  Meeting Id  Members Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PC_Meetings__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pc-meetings/api/meetings/{meeting_id}/rollup": {
+      "get": {
+        "tags": [
+          "PC Meetings - meetings"
+        ],
+        "summary": "[PC Meetings] Meeting Rollup",
+        "description": "This meeting's posture across every PC and AC, over the whole list.\n\nThe member table serves a page at a time; these figures are counted over all\nof it, so the headline never describes only the rows on screen.",
+        "operationId": "PC_Meetings__meeting_rollup_api_meetings__meeting_id__rollup_get",
+        "parameters": [
+          {
+            "name": "meeting_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Meeting Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Meeting Rollup Api Meetings  Meeting Id  Rollup Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PC_Meetings__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pc-meetings/api/meetings/{meeting_id}/members/{mid}/remarks": {
+      "put": {
+        "tags": [
+          "PC Meetings - meetings"
+        ],
+        "summary": "[PC Meetings] Save Remarks",
+        "description": "Record (or clear) one absentee's feedback remark.\n\nReturns the member and the meeting together: the meeting's completion moves\nwith the save, and the UI would otherwise have to refetch. An empty remark\nclears the capture \u2014 as a soft delete, because `feedback_comment` is shared\nwith the rest of the party estate and rows there are not ours to destroy.",
+        "operationId": "PC_Meetings__save_remarks_api_meetings__meeting_id__members__mid__remarks_put",
+        "parameters": [
+          {
+            "name": "meeting_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Meeting Id"
+            }
+          },
+          {
+            "name": "mid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Mid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PC_Meetings__RemarksIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Save Remarks Api Meetings  Meeting Id  Members  Mid  Remarks Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PC_Meetings__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pc-meetings/api/programs": {
+      "get": {
+        "tags": [
+          "PC Meetings - programs"
+        ],
+        "summary": "[PC Meetings] List Programs",
+        "operationId": "PC_Meetings__list_programs_api_programs_get",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "YYYY-MM-DD",
+              "title": "From"
+            },
+            "description": "YYYY-MM-DD"
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "YYYY-MM-DD",
+              "title": "To"
+            },
+            "description": "YYYY-MM-DD"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  },
+                  "title": "Response List Programs Api Programs Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PC_Meetings__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pc-meetings/api/programs/roles": {
+      "get": {
+        "tags": [
+          "PC Meetings - programs"
+        ],
+        "summary": "[PC Meetings] List Roles",
+        "description": "Every member designation a programme can be filtered by (Minister, MLA,\nMP, Mandal President, \u2026) \u2014 a fixed roster, not a per-programme or\nper-period breakdown.\n\nThis is `party_track.role`, not `mytdp.role`: the latter is committee-\nmeeting org tiers (State/District/.../Booth), a different taxonomy that\nanswers a different question. Unlike the routes above, `party_track.role`\nis real and already populated, so this one is wired for real rather than\nraising 501.",
+        "operationId": "PC_Meetings__list_roles_api_programs_roles_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "type": "object"
+                  },
+                  "type": "array",
+                  "title": "Response List Roles Api Programs Roles Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pc-meetings/api/programs/activities": {
+      "get": {
+        "tags": [
+          "PC Meetings - programs"
+        ],
+        "summary": "[PC Meetings] List Activities",
+        "description": "Every activity type a programme can be filtered by (Membership Drive,\nPressmeets, Door 2 Door Campaign, \u2026) \u2014 `party_track.activity`, the same\nsibling schema `/roles` reads, and just as real and already populated.",
+        "operationId": "PC_Meetings__list_activities_api_programs_activities_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "type": "object"
+                  },
+                  "type": "array",
+                  "title": "Response List Activities Api Programs Activities Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pc-meetings/api/programs/role-summary": {
+      "get": {
+        "tags": [
+          "PC Meetings - programs"
+        ],
+        "summary": "[PC Meetings] Role Summary",
+        "description": "The first Programmes card: every active role, its `leader` roster\nsize, and how many of those leaders logged at least one\n`leader_program_activity` row (against any programme) in this month.\n\n`total` counts every leader row for the role, `members` only the ones\nnot soft-deleted \u2014 the two differ exactly where leaders have left since\nbeing added, the same way `ACI`'s 50 rows split into 42 active today.",
+        "operationId": "PC_Meetings__role_summary_api_programs_role_summary_get",
+        "parameters": [
+          {
+            "name": "year",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "maximum": 2100,
+              "minimum": 2000,
+              "title": "Year"
+            }
+          },
+          {
+            "name": "month",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "maximum": 12,
+              "minimum": 1,
+              "title": "Month"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  },
+                  "title": "Response Role Summary Api Programs Role Summary Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PC_Meetings__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pc-meetings/api/programs/activity-summary": {
+      "get": {
+        "tags": [
+          "PC Meetings - programs"
+        ],
+        "summary": "[PC Meetings] Activity Summary",
+        "description": "The second Programmes card: one row per (role, programme) pairing\n`program_role` actually defines \u2014 not every role crossed with every\nprogramme, since not every programme applies to every role. `activity`\nin the response is `program.program_name`; `roleId`/`activityId` ride\nalong so the member card below can ask for one pairing's leaders\nwithout re-deriving ids from the display names.",
+        "operationId": "PC_Meetings__activity_summary_api_programs_activity_summary_get",
+        "parameters": [
+          {
+            "name": "year",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "maximum": 2100,
+              "minimum": 2000,
+              "title": "Year"
+            }
+          },
+          {
+            "name": "month",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "maximum": 12,
+              "minimum": 1,
+              "title": "Month"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  },
+                  "title": "Response Activity Summary Api Programs Activity Summary Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PC_Meetings__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pc-meetings/api/programs/leaders": {
+      "get": {
+        "tags": [
+          "PC Meetings - programs"
+        ],
+        "summary": "[PC Meetings] Program Leaders",
+        "description": "The third Programmes card: every active leader in one role, with\ntheir `leader_program_activity` participation for one programme and\nmonth \u2014 0/0 for a leader who has not logged anything yet, not an\nabsent row, so the card always has one row per roster member.\n\n`assembly`/`parliament` are `mytdp` tables, not `party_track` \u2014\n`leader.constituency_id`/`parliament_id` reach across schemas the same\nway `config.PARTY_TRACK_DB`'s own docstring says the RDS user allows.\nCapped at `MAX_PAGE_SIZE` for the same reason the meeting member table is.",
+        "operationId": "PC_Meetings__program_leaders_api_programs_leaders_get",
+        "parameters": [
+          {
+            "name": "role_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Role Id"
+            }
+          },
+          {
+            "name": "activity_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "description": "program_id, despite the name \u2014 matches activity-summary's field",
+              "title": "Activity Id"
+            },
+            "description": "program_id, despite the name \u2014 matches activity-summary's field"
+          },
+          {
+            "name": "year",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "maximum": 2100,
+              "minimum": 2000,
+              "title": "Year"
+            }
+          },
+          {
+            "name": "month",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "maximum": 12,
+              "minimum": 1,
+              "title": "Month"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  },
+                  "title": "Response Program Leaders Api Programs Leaders Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PC_Meetings__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pc-meetings/api/programs/{program_id}/daywise": {
+      "get": {
+        "tags": [
+          "PC Meetings - programs"
+        ],
+        "summary": "[PC Meetings] Day Wise",
+        "operationId": "PC_Meetings__day_wise_api_programs__program_id__daywise_get",
+        "parameters": [
+          {
+            "name": "program_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Program Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  },
+                  "title": "Response Day Wise Api Programs  Program Id  Daywise Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PC_Meetings__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pc-meetings/api/programs/{program_id}/attendees": {
+      "get": {
+        "tags": [
+          "PC Meetings - programs"
+        ],
+        "summary": "[PC Meetings] Attendees",
+        "operationId": "PC_Meetings__attendees_api_programs__program_id__attendees_get",
+        "parameters": [
+          {
+            "name": "program_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Program Id"
+            }
+          },
+          {
+            "name": "ac",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Constituency name, exact match",
+              "title": "Ac"
+            },
+            "description": "Constituency name, exact match"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 3000,
+              "minimum": 1,
+              "default": 3000,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Attendees Api Programs  Program Id  Attendees Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PC_Meetings__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pc-meetings/api/remarks-categories": {
+      "get": {
+        "tags": [
+          "PC Meetings - remarks"
+        ],
+        "summary": "[PC Meetings] List Remarks Categories",
+        "operationId": "PC_Meetings__list_remarks_categories_api_remarks_categories_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "type": "object"
+                  },
+                  "type": "array",
+                  "title": "Response List Remarks Categories Api Remarks Categories Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pc-meetings/api/units": {
+      "get": {
+        "tags": [
+          "PC Meetings - units"
+        ],
+        "summary": "[PC Meetings] List Units",
+        "description": "Every unit in the state, with its total count.",
+        "operationId": "PC_Meetings__list_units_api_units_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response List Units Api Units Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pc-meetings/health": {
+      "get": {
+        "tags": [
+          "PC Meetings - meta"
+        ],
+        "summary": "[PC Meetings] Health",
+        "operationId": "PC_Meetings__health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Health Health Get"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -3891,6 +5149,93 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "PC_Meetings__ConductedRemarkIn": {
+        "properties": {
+          "categoryId": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Categoryid"
+          },
+          "remarks": {
+            "type": "string",
+            "maxLength": 2000,
+            "title": "Remarks",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "ConductedRemarkIn"
+      },
+      "PC_Meetings__HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/PC_Meetings__ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "PC_Meetings__RemarksIn": {
+        "properties": {
+          "remarks": {
+            "type": "string",
+            "maxLength": 2000,
+            "title": "Remarks",
+            "default": ""
+          },
+          "capturedBy": {
+            "type": "string",
+            "maxLength": 64,
+            "title": "Capturedby",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "RemarksIn"
+      },
+      "PC_Meetings__ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
       }
     }
   },
@@ -3918,6 +5263,34 @@
     {
       "name": "Portal Dashboard - portal",
       "description": "Served from /portal-dashboard"
+    },
+    {
+      "name": "PC Meetings - assemblies",
+      "description": "Served from /pc-meetings"
+    },
+    {
+      "name": "PC Meetings - committees",
+      "description": "Served from /pc-meetings"
+    },
+    {
+      "name": "PC Meetings - meetings",
+      "description": "Served from /pc-meetings"
+    },
+    {
+      "name": "PC Meetings - meta",
+      "description": "Served from /pc-meetings"
+    },
+    {
+      "name": "PC Meetings - programs",
+      "description": "Served from /pc-meetings"
+    },
+    {
+      "name": "PC Meetings - remarks",
+      "description": "Served from /pc-meetings"
+    },
+    {
+      "name": "PC Meetings - units",
+      "description": "Served from /pc-meetings"
     }
   ]
 }

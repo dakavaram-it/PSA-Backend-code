@@ -1,4 +1,4 @@
-# Union of both projects' own requirements, for running gateway.py.
+# Union of every project's own requirements, for running gateway.py.
 # Each sub-directory keeps its own requirements.txt for standalone runs.
 fastapi==0.115.6
 uvicorn[standard]==0.32.1

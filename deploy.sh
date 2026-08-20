@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # PSA Backend Deployment Script
-# Deploys gateway.py (portal, admin-dashboard and portal-dashboard FastAPI
-# backends) via PM2
+# Deploys gateway.py (portal, admin-dashboard, portal-dashboard and pc-meetings
+# FastAPI backends) via PM2
 
 set -e
 
@@ -32,6 +32,11 @@ fi
 # first request and PM2 restart-loops.
 if [ ! -f portal-dashboard/.env ]; then
     print_error "portal-dashboard/.env not found. Create one based on portal-dashboard/.env.example"
+    exit 1
+fi
+
+if [ ! -f pc-meetings/.env ]; then
+    print_error "pc-meetings/.env not found. Create one based on pc-meetings/.env.example"
     exit 1
 fi
 

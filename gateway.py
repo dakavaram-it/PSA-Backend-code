@@ -6,6 +6,7 @@ mounted under a prefix named after the project:
     /portal-frontend-code/...   portal-frontend-code/Backend         (FastAPI)
     /admin-dashboard/...        admin-dashboard/Backend              (FastAPI)
     /portal-dashboard/...       portal-dashboard/Backend             (FastAPI)
+    /pc-meetings/...            pc-meetings/backend                  (FastAPI)
 
 Mounting (rather than merging routers into one app) is deliberate: each backend
 keeps its own middleware stack. The portal's session guard and the per-project
@@ -145,6 +146,25 @@ def _load_portal_dashboard() -> FastAPI:
     return _load_flat_backend("portal_dashboard_backend_main", "portal-dashboard")
 
 
+def _load_pc_meetings() -> FastAPI:
+    """Load pc-meetings/backend, whose code is an `app` *package*.
+
+    Neither shape above fits it: it is not one file the way the portal's
+    main.py is, and its modules are namespaced under `app.` rather than flat,
+    so the top-level names the flat loader has to clear (config, db, routers,
+    ...) cannot collide with anything here. Only its own backend/ goes on
+    sys.path, which is what makes `import app` resolve to this tree.
+    """
+    base = ROOT / "pc-meetings"
+    load_dotenv(base / ".env", override=True)
+    backend = base / "backend"
+    sys.path.insert(0, str(backend))
+    try:
+        return importlib.import_module("app.main").app
+    finally:
+        sys.path.remove(str(backend))
+
+
 # Order matters: every backend reads DB_HOST/DB_USER/... out of the environment
 # at import time, but they point at different databases (and, for admin and
 # portal-dashboard, at different tables in the same one). Each is loaded straight
@@ -153,6 +173,7 @@ PROJECTS = [
     ("Portal (Local Body Elections)", "/portal-frontend-code", _load_portal),
     ("Admin Dashboard", "/admin-dashboard", _load_admin),
     ("Portal Dashboard", "/portal-dashboard", _load_portal_dashboard),
+    ("PC Meetings", "/pc-meetings", _load_pc_meetings),
 ]
 
 gateway = FastAPI(
