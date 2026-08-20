@@ -1439,12 +1439,13 @@ class LoginRequest(BaseModel):
 
 
 # What this user is allowed to see, via the groups they belong to. GROUP BY collapses
-# the same entitlement reached through two groups; the row shape is one name per row.
+# the same entitlement reached through two groups; the row shape is one entitlement per
+# row, id and name — the id is what a caller keys on, the name is for display.
 # ponytail: fine while the list is a handful of names — if it ever runs to hundreds,
 # keep the token thin and read them per request instead.
 def entitlements_for(user_id):
-    rows = query(
-        "SELECT E.entitlement_type AS entitlement_name "
+    return query(
+        "SELECT E.entitlement_id, E.entitlement_type AS entitlement_name "
         "FROM user_group_relation UGR "
         "JOIN user_group_entitlement UGE ON UGR.user_group_id = UGE.user_group_id "
         "JOIN group_entitlement_relation GER "
@@ -1454,7 +1455,6 @@ def entitlements_for(user_id):
         "GROUP BY E.entitlement_id ORDER BY entitlement_name",
         (user_id,),
     )
-    return [r["entitlement_name"] for r in rows]
 
 
 # The identity every caller sees, from `login` and from `me` alike. It is assembled per
@@ -1466,6 +1466,11 @@ def identity_from_row(row):
         "firstname": row["firstname"],
         "lastname": row["lastname"],
         "user_type": row["user_type"],
+        # The raw pair as the Java portal wrote it, beside the three ids scope_for
+        # expands it into. Callers that need to know *how* a user is scoped (STATE vs
+        # MLA vs ZONE) cannot recover that from the ids alone.
+        "access_type": row["access_type"],
+        "access_value": row["access_value"],
         **scope_for(row["access_type"], row["access_value"]),
         "entitlements": entitlements_for(row["user_id"]),
     }
@@ -1551,7 +1556,17 @@ def login(body: LoginRequest):
             LOGIN_ATTEMPTS.pop(body.username, None)
             # The token is the whole session: the caller stores it and presents it as
             # `Authorization: Bearer <token>` on every later call.
-            return {**identity_from_row(row), "token": token}
+            #
+            # `assemblies` rides along only here, not in identity_from_row: it is the
+            # picklist the wizard opens with, and identity_from_row is what *every*
+            # authenticated request rebuilds via current_user — putting a three-way
+            # union there would run it on each call for a list that changes rarely.
+            # /getUserAccessAssemblies re-reads it when the caller needs it fresh.
+            return {
+                **identity_from_row(row),
+                "assemblies": user_access_assemblies(row["user_id"]),
+                "token": token,
+            }
 
     LOGIN_ATTEMPTS.setdefault(body.username, []).append(time.time())
     # One message for both cases, so it does not reveal which usernames exist.

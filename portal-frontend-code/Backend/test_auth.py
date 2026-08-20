@@ -45,18 +45,20 @@ def matching_row(user_id=2):
 def login_against(rows, password=PASSWORD):
     """Run main.login with the `user` SELECT stubbed out to return `rows`.
 
-    login() makes two more reads once a password matches — the entitlements, and the
-    hierarchy above the row's access_value — so the stub answers on the SQL rather than
-    handing `rows` to every caller."""
+    login() makes three more reads once a password matches — the entitlements, the
+    hierarchy above the row's access_value, and the assemblies the user may work in — so
+    the stub answers on the SQL rather than handing `rows` to every caller."""
 
     def stub(sql, args=None):
         if "FROM `user`" in sql:
             return rows
+        if "FROM user_state_access_info" in sql:
+            return [{"constituency_id": 181, "constituency_name": "Test Assembly"}]
         if "FROM constituency" in sql:
             return [{"state_id": 1, "district_id": 11}]
         if "FROM district" in sql:
             return [{"state_id": 1}]
-        return [{"entitlement_name": "TEST_ENTITLEMENT"}]
+        return [{"entitlement_id": 7, "entitlement_name": "TEST_ENTITLEMENT"}]
 
     real_query, main.query = main.query, stub
     try:
@@ -182,7 +184,21 @@ def test_login_returns_entitlements():
     # them; a grant changed in the DB now takes effect on the next request.
     reset()
     user = login_against([matching_row()])
-    assert user["entitlements"] == ["TEST_ENTITLEMENT"], user
+    assert user["entitlements"] == [
+        {"entitlement_id": 7, "entitlement_name": "TEST_ENTITLEMENT"}
+    ], user
+
+
+def test_login_returns_the_access_pair_and_the_assemblies():
+    # The pair says how the user is scoped, which the three expanded ids cannot express;
+    # the assemblies are the grants a query may actually be scoped by.
+    reset()
+    user = login_against([matching_row()])
+    assert user["access_type"] == "MLA", user
+    assert user["access_value"] == "181", user
+    assert user["assemblies"] == [
+        {"constituency_id": 181, "constituency_name": "Test Assembly"}
+    ], user
 
 
 def test_login_answers_the_scope_the_access_pair_names():

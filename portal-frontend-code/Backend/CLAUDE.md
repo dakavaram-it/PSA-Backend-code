@@ -132,10 +132,17 @@ raw-bytes salt — every existing row would stop matching.
   which covers 1,240 users and disagrees with `access_value` for 38 of them. The login fields
   say where a user sits; they are not what any query may be scoped by.
 - **`entitlements` is part of the identity, not a field beside it.** `entitlements_for(user_id)`
-  reads the names the user's groups grant (`user_group_relation` → `user_group_entitlement` →
-  `group_entitlement_relation` → `entitlement`, `entitlement_type AS entitlement_name`) and the
-  list goes **into the `user` dict** that `identity_from_row` builds, which is what both `login`
-  and `me` answer with.
+  reads what the user's groups grant (`user_group_relation` → `user_group_entitlement` →
+  `group_entitlement_relation` → `entitlement`) as `{entitlement_id, entitlement_name}` rows —
+  key on the id, show the name — and the list goes **into the `user` dict** that
+  `identity_from_row` builds, which is what both `login` and `me` answer with. The raw
+  `access_type` / `access_value` pair sits in that dict too, beside the three ids `scope_for`
+  expands it into, since *how* a user is scoped is not recoverable from the ids alone.
+- **`assemblies` is on `login` only, not on `me`.** `login` appends
+  `user_access_assemblies(user_id)` so the wizard opens with its picklist already filled;
+  `identity_from_row` deliberately does not, because `current_user` rebuilds it on every
+  authenticated request and a three-way union there would run per call. `/getUserAccessAssemblies`
+  is the endpoint that re-reads it.
 - **A token cannot be revoked before it expires.** `logout` is stateless: it answers
   `{"ok": true}` and the client drops its copy, but the token stays valid until `exp` or
   until its `iat` falls outside `SESSION_TTL`. That is the cost of no session store —
