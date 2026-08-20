@@ -1423,6 +1423,39 @@ def entitlements_for(user_id):
     return [r["entitlement_name"] for r in rows]
 
 
+# Where this user sits, for the three ids the login response promises. Not read off
+# `user`.state_id/district_id/constituency_id: those columns are dead — the Java portal
+# writes a user's scope as the access_type/access_value pair and never backfilled them,
+# so 18 rows out of 76,785 carry a constituency_id and everyone else logged in with all
+# three null. access_value is the id of whatever access_type names, and each level fills
+# in the ones above it:
+#   MLA      an assembly constituency, which carries both a district and a state
+#   MP       a parliament constituency, which spans districts, so it carries only a state
+#   DISTRICT a district, which carries a state
+#   STATE    the state itself
+# Anything else — COUNTRY, ZONE, and a couple of rows holding literal placeholder text
+# where an id belongs — names none of the three and keeps them null.
+def scope_for(access_type, access_value):
+    scope = {"state_id": None, "district_id": None, "constituency_id": None}
+    if access_value is None or not str(access_value).isdigit():
+        return scope
+    value = int(access_value)
+    if access_type in ("MLA", "MP"):
+        rows = query(
+            "SELECT state_id, district_id FROM constituency WHERE constituency_id = %s",
+            (value,),
+        )
+        if rows:
+            scope.update(rows[0], constituency_id=value)
+    elif access_type == "DISTRICT":
+        rows = query("SELECT state_id FROM district WHERE district_id = %s", (value,))
+        if rows:
+            scope.update(rows[0], district_id=value)
+    elif access_type == "STATE":
+        scope["state_id"] = value
+    return scope
+
+
 @app.post("/login")
 def login(body: LoginRequest):
     sweep_expired(time.time())
@@ -1432,8 +1465,8 @@ def login(body: LoginRequest):
     # username is indexed but not unique, so every row carrying the name is a
     # candidate; the hash decides which one (if any) the password belongs to.
     rows = query(
-        "SELECT user_id, username, firstname, lastname, user_type, state_id, "
-        "district_id, constituency_id, Hash_Key, Salt_Key FROM `user` "
+        "SELECT user_id, username, firstname, lastname, user_type, access_type, "
+        "access_value, Hash_Key, Salt_Key FROM `user` "
         "WHERE username = %s AND Hash_Key IS NOT NULL AND Salt_Key IS NOT NULL",
         (body.username,),
     )
@@ -1463,9 +1496,7 @@ def login(body: LoginRequest):
                 "firstname": row["firstname"],
                 "lastname": row["lastname"],
                 "user_type": row["user_type"],
-                "state_id": row["state_id"],
-                "district_id": row["district_id"],
-                "constituency_id": row["constituency_id"],
+                **scope_for(row["access_type"], row["access_value"]),
                 # Part of the identity, not a field beside it: it rides the JWT, so /me
                 # hands it back on a reload and the server is what signed it — a client
                 # cannot grant itself an entitlement it was not issued. The cost is that

@@ -95,6 +95,18 @@ raw-bytes salt — every existing row would stop matching.
   `bearer_token(request)`. `current_user` decodes it and strips `JWT_META_CLAIMS` (`exp`)
   so callers get the same identity shape `login` returned. Any `jwt.InvalidTokenError` —
   expired, tampered with, foreign key, not a JWT — is simply "no session", i.e. a `401`.
+- **`user.state_id` / `district_id` / `constituency_id` are dead columns** — 18 rows out of
+  76,785 carry a `constituency_id`. The Java portal records a user's scope as the
+  **`access_type` / `access_value`** pair instead and never backfilled them, so reading them
+  in `login` answered `null` for all three on every account. `scope_for()` expands the live
+  pair, each level filling in the ones above it: `MLA` is an assembly `constituency_id`
+  (which carries district and state), `MP` a parliament one (spans districts, so state only),
+  `DISTRICT` a `district_id`, `STATE` a `state_id`. `COUNTRY`, `ZONE` and the couple of rows
+  holding placeholder text where an id belongs name none of the three.
+- **`access_value` is not the same thing as an access grant.** Authorization still comes from
+  `user_state_access_info` / `user_constituency_access_info` via `user_access_assemblies()`,
+  which covers 1,240 users and disagrees with `access_value` for 38 of them. The login fields
+  say where a user sits; they are not what any query may be scoped by.
 - **`entitlements` is part of the identity, not a field beside it.** `entitlements_for(user_id)`
   reads the names the user's groups grant (`user_group_relation` → `user_group_entitlement` →
   `group_entitlement_relation` → `entitlement`, `entitlement_type AS entitlement_name`) and the

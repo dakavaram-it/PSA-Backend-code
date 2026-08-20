@@ -20,16 +20,15 @@ PASSWORD = "correct horse"
 GOOD_SALT = b"[B@3da6a354".hex()
 
 
-def user_row(salt_key, hash_key, user_id=1):
+def user_row(salt_key, hash_key, user_id=1, access_type="MLA", access_value="181"):
     return {
         "user_id": user_id,
         "username": USERNAME,
         "firstname": "Test",
         "lastname": "User",
         "user_type": 1,
-        "state_id": 1,
-        "district_id": 1,
-        "constituency_id": 181,
+        "access_type": access_type,
+        "access_value": access_value,
         "Salt_Key": salt_key,
         "Hash_Key": hash_key,
     }
@@ -44,11 +43,20 @@ def matching_row(user_id=2):
 def login_against(rows, password=PASSWORD):
     """Run main.login with the `user` SELECT stubbed out to return `rows`.
 
-    login() makes a second read for the entitlements once a password matches, so the
-    stub answers on the SQL rather than handing `rows` to every caller."""
-    real_query, main.query = main.query, lambda sql, args=None: (
-        rows if "FROM `user`" in sql else [{"entitlement_name": "TEST_ENTITLEMENT"}]
-    )
+    login() makes two more reads once a password matches — the entitlements, and the
+    hierarchy above the row's access_value — so the stub answers on the SQL rather than
+    handing `rows` to every caller."""
+
+    def stub(sql, args=None):
+        if "FROM `user`" in sql:
+            return rows
+        if "FROM constituency" in sql:
+            return [{"state_id": 1, "district_id": 11}]
+        if "FROM district" in sql:
+            return [{"state_id": 1}]
+        return [{"entitlement_name": "TEST_ENTITLEMENT"}]
+
+    real_query, main.query = main.query, stub
     try:
         return main.login(main.LoginRequest(username=USERNAME, password=password))
     finally:
@@ -158,6 +166,47 @@ def test_login_returns_entitlements_and_carries_them_in_the_token():
     assert user["entitlements"] == ["TEST_ENTITLEMENT"], user
     claims = jwt.decode(user["token"], main.JWT_SECRET, algorithms=[main.JWT_ALGORITHM])
     assert claims["entitlements"] == ["TEST_ENTITLEMENT"], claims
+
+
+def test_login_answers_the_scope_the_access_pair_names():
+    # The regression this guards: /login read `user`.state_id/district_id/constituency_id,
+    # which the Java portal never fills, so every response carried three nulls.
+    reset()
+    user = login_against([matching_row()])
+    assert user["constituency_id"] == 181, user
+    assert user["district_id"] == 11, user
+    assert user["state_id"] == 1, user
+    claims = jwt.decode(user["token"], main.JWT_SECRET, algorithms=[main.JWT_ALGORITHM])
+    assert claims["constituency_id"] == 181, claims
+
+
+def test_scope_for_fills_in_only_what_the_access_level_names():
+    # One level per branch, plus the rows whose access_value is not an id at all.
+    real_query, main.query = main.query, lambda sql, args=None: (
+        [{"state_id": 1, "district_id": 11}] if "FROM constituency" in sql
+        else [{"state_id": 1}]
+    )
+    try:
+        assert main.scope_for("MLA", "111") == {
+            "state_id": 1, "district_id": 11, "constituency_id": 111
+        }
+        # A parliament spans districts: the constituency row's district_id is NULL.
+        real_district = main.query
+        main.query = lambda sql, args=None: [{"state_id": 1, "district_id": None}]
+        assert main.scope_for("MP", "504") == {
+            "state_id": 1, "district_id": None, "constituency_id": 504
+        }
+        main.query = real_district
+        assert main.scope_for("DISTRICT", "11") == {
+            "state_id": 1, "district_id": 11, "constituency_id": None
+        }
+        empty = {"state_id": None, "district_id": None, "constituency_id": None}
+        assert main.scope_for("STATE", "1") == {**empty, "state_id": 1}
+        assert main.scope_for("ZONE", "3") == empty
+        assert main.scope_for("accessType", "accessValue") == empty
+        assert main.scope_for("MLA", None) == empty
+    finally:
+        main.query = real_query
 
 
 def test_expired_token_is_rejected():
