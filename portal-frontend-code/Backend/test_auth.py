@@ -3,7 +3,9 @@
     cd Backend && python test_auth.py
 
 Covers the failure modes that are hard to reproduce by clicking: a malformed `user`
-row aborting a login that should have succeeded, and the two dicts that grow forever.
+row aborting a login that should have succeeded, the two dicts that grow forever, and
+the portal handshake — which key its tokens verify against, and what a `sub`-only
+payload turns back into.
 """
 
 import binascii
@@ -68,16 +70,32 @@ def request_with(headers=None):
     return types.SimpleNamespace(headers=headers or {})
 
 
-def bearer(user, ttl=60):
-    """A signed token for `user`, expiring in `ttl` seconds (negative = already dead)."""
+def bearer(user_id, ttl=60, iat_offset=0):
+    """A portal-shaped header for `user_id`, expiring in `ttl` seconds (negative = already
+    dead). `iat_offset` ages the token without touching its `exp`, which is how a token
+    the portal still considers live falls outside this API's SESSION_TTL."""
+    issued = int(time.time()) + iat_offset
     return {
         "authorization": "Bearer "
         + jwt.encode(
-            {**user, "exp": int(time.time()) + ttl},
-            main.JWT_SECRET,
+            {"sub": str(user_id), "iat": issued, "exp": int(time.time()) + ttl},
+            main.JWT_KEY,
             algorithm=main.JWT_ALGORITHM,
         )
     }
+
+
+def resolving(user_id, fn):
+    """Run `fn` with the identity read current_user makes stubbed out, so the tests stay
+    off the database."""
+    identity = {"user_id": user_id, "username": USERNAME, "entitlements": []}
+    real, main.identity_for = main.identity_for, lambda uid: (
+        identity if uid == user_id else None
+    )
+    try:
+        return fn()
+    finally:
+        main.identity_for = real
 
 
 def reset():
@@ -136,36 +154,35 @@ def test_sweep_drops_only_stale_login_attempts():
     assert set(main.LOGIN_ATTEMPTS) == {"recent"}, main.LOGIN_ATTEMPTS
 
 
-def test_login_returns_a_token_carrying_the_user():
-    # The token IS the session, so everything /me answers has to be inside it.
+def test_the_login_token_is_shaped_the_way_the_portals_is():
+    # The whole point of minting rather than fetching: the payload has to be what
+    # getToken produces, or the portal rejects a token this API issued. `sub` is the
+    # matched row's id, as a *string*, and it is signed for SESSION_TTL.
     reset()
     user = login_against([matching_row()])
-    claims = jwt.decode(
-        user["token"], main.JWT_SECRET, algorithms=[main.JWT_ALGORITHM]
-    )
-    assert claims["user_id"] == 2, claims
-    assert claims["username"] == USERNAME
-    # Signed for SESSION_TTL, give or take the second the login took.
-    assert abs(claims["exp"] - (time.time() + main.SESSION_TTL)) < 5, claims["exp"]
+    claims = jwt.decode(user["token"], main.JWT_KEY, algorithms=[main.JWT_ALGORITHM])
+    assert claims["sub"] == "2", claims
+    assert set(claims) == {"sub", "iat", "exp"}, claims
+    assert claims["exp"] - claims["iat"] == main.SESSION_TTL, claims
 
 
-def test_the_login_token_authenticates_and_hides_jwt_bookkeeping():
+def test_the_login_token_authenticates_as_the_same_identity():
     reset()
     user = login_against([matching_row()])
     request = request_with(headers={"authorization": f"Bearer {user['token']}"})
-    identity = main.current_user(request)
-    assert "exp" not in identity, identity
-    assert identity == {k: v for k, v in user.items() if k != "token"}, identity
+    identity = resolving(2, lambda: main.current_user(request))
+    assert identity["user_id"] == 2, identity
+    # The token carries `sub` and nothing else — none of the identity rides along.
+    claims = jwt.decode(user["token"], main.JWT_KEY, algorithms=[main.JWT_ALGORITHM])
+    assert set(claims) == {"sub", "iat", "exp"}, claims
 
 
-def test_login_returns_entitlements_and_carries_them_in_the_token():
-    # They gate what the portal shows, so a reload (me, i.e. the token) has to know
-    # them too — not just the login response.
+def test_login_returns_entitlements():
+    # They gate what the portal shows. They no longer ride the token, so /me re-reads
+    # them; a grant changed in the DB now takes effect on the next request.
     reset()
     user = login_against([matching_row()])
     assert user["entitlements"] == ["TEST_ENTITLEMENT"], user
-    claims = jwt.decode(user["token"], main.JWT_SECRET, algorithms=[main.JWT_ALGORITHM])
-    assert claims["entitlements"] == ["TEST_ENTITLEMENT"], claims
 
 
 def test_login_answers_the_scope_the_access_pair_names():
@@ -176,8 +193,44 @@ def test_login_answers_the_scope_the_access_pair_names():
     assert user["constituency_id"] == 181, user
     assert user["district_id"] == 11, user
     assert user["state_id"] == 1, user
-    claims = jwt.decode(user["token"], main.JWT_SECRET, algorithms=[main.JWT_ALGORITHM])
-    assert claims["constituency_id"] == 181, claims
+
+
+def test_the_portals_own_token_verifies_here():
+    # The whole point of the handoff: a token minted by
+    # mypartydashboard.com/PSA/WebService/User/getToken is a session here. It verifies
+    # against the **base64-decoded** JWT_SECRET, the way jjwt signs it — handing PyJWT
+    # the raw characters rejects every token the portal issues.
+    reset()
+    sample = (
+        "eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiIxIiwiZXhwIjoxNzg4NDcwOTEzLCJpYXQiOjE3ODcxNzQ5"
+        "MTN9.sTijvCAc8ty5wQYiu1Xhcmyv-4qmVgOsBglsyTlxH4YLjRbW7-VqVC9Rw9FlT_b32Fzpqwpu"
+        "ca_uQ915xj3_7A"
+    )
+    claims = jwt.decode(
+        sample,
+        main.JWT_KEY,
+        algorithms=[main.JWT_ALGORITHM],
+        options={"verify_exp": False},
+    )
+    assert claims["sub"] == "1", claims
+
+
+def test_a_token_past_session_ttl_is_not_a_session():
+    # getToken signs for 15 days. A token the portal still considers live is not one
+    # here once its `iat` falls outside SESSION_TTL.
+    reset()
+    fresh = bearer(7, ttl=15 * 24 * 3600)
+    assert resolving(7, lambda: main.current_user(request_with(fresh))) is not None
+    stale = bearer(7, ttl=15 * 24 * 3600, iat_offset=-main.SESSION_TTL - 60)
+    assert resolving(7, lambda: main.current_user(request_with(stale))) is None
+
+
+def test_a_token_for_an_unknown_user_is_not_a_session():
+    # `sub` is a claim, not proof the row still exists — a deleted user must not keep
+    # a live token working.
+    reset()
+    request = request_with(bearer(4242))
+    assert resolving(7, lambda: main.current_user(request)) is None
 
 
 def test_scope_for_fills_in_only_what_the_access_level_names():
@@ -211,24 +264,32 @@ def test_scope_for_fills_in_only_what_the_access_level_names():
 
 def test_expired_token_is_rejected():
     reset()
-    assert main.current_user(request_with(bearer({"user_id": 7}, ttl=-1))) is None
+    assert main.current_user(request_with(bearer(7, ttl=-1))) is None
 
 
 def test_tampered_or_foreign_tokens_are_rejected():
     reset()
     good = jwt.encode(
-        {"user_id": 7, "exp": int(time.time()) + 60},
-        main.JWT_SECRET,
+        {"sub": "7", "iat": int(time.time()), "exp": int(time.time()) + 60},
+        main.JWT_KEY,
         algorithm=main.JWT_ALGORITHM,
     )
     forged = jwt.encode(
-        {"user_id": 7, "exp": int(time.time()) + 60},
+        {"sub": "7", "iat": int(time.time()), "exp": int(time.time()) + 60},
         "not-the-secret",
         algorithm=main.JWT_ALGORITHM,
     )
-    # Same claims, wrong key — the signature is the only thing standing between a
+    # The raw JWT_SECRET characters are a wrong key too: the portal signs with its
+    # base64-decoded bytes, and the signature is the only thing standing between a
     # caller and any user_id they care to name.
-    assert main.current_user(request_with({"authorization": f"Bearer {forged}"})) is None
+    raw_secret = jwt.encode(
+        {"sub": "7", "iat": int(time.time()), "exp": int(time.time()) + 60},
+        main.env("JWT_SECRET"),
+        algorithm=main.JWT_ALGORITHM,
+    )
+    for bad in (forged, raw_secret):
+        request = request_with({"authorization": f"Bearer {bad}"})
+        assert resolving(7, lambda: main.current_user(request)) is None, bad
     head, payload, sig = good.split(".")
     for broken in (f"{head}.{payload}.{sig[:-1]}x", f"{head}.{payload}", "not-a-jwt"):
         request = request_with({"authorization": f"Bearer {broken}"})
@@ -237,7 +298,9 @@ def test_tampered_or_foreign_tokens_are_rejected():
 
 def test_bearer_header_authenticates():
     reset()
-    assert main.current_user(request_with(bearer({"user_id": 7}))) == {"user_id": 7}
+    request = request_with(bearer(7))
+    identity = resolving(7, lambda: main.current_user(request))
+    assert identity["user_id"] == 7, identity
 
 
 def test_a_cookie_no_longer_authenticates():

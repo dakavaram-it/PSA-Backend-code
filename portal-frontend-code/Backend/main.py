@@ -1,3 +1,4 @@
+import base64
 import binascii
 import datetime
 import decimal
@@ -1304,23 +1305,33 @@ DUMMY_SALT_KEY = b"nonexistent-user".hex()
 SESSION_TTL = 8 * 60 * 60  # seconds
 
 # The session is a signed JWT and nothing else: no server-side session store, no cookie.
-# The user row travels inside the token, so any worker of any restarted process can verify
-# a request on its own. The trade is that a token cannot be revoked before it expires —
-# /logout only tells the client to drop it. Shorten SESSION_TTL, or add a denylist, if that
-# stops being acceptable.
-JWT_SECRET = env("JWT_SECRET")
+# It is minted here rather than fetched from the Java portal's getToken service, which
+# answers 404 at every path we have — but with the portal's own key and claim shape, so
+# the two remain interchangeable: a token from either side is a session on the other.
+# The trade is that a token cannot be revoked before it expires — /logout only tells the
+# client to drop it.
 JWT_ALGORITHM = env("ALGORITHM")
 
-# JWT bookkeeping, as opposed to the claims that are the identity. Anything here is
-# stripped back off before a decoded token is handed to a caller.
-JWT_META_CLAIMS = ("exp",)
+# The Java side signs with the **base64-decoded** JWT_SECRET, not its characters — that
+# is jjwt's `signWith(alg, String)` contract, which reads the string as base64. Handing
+# PyJWT the raw 15-character secret verifies against a different 15-byte key and rejects
+# every token the portal issues. Decode once, here.
+# ponytail: the decoded key is 9 bytes, far under HS512's 64-byte block. Not something
+# this file can fix — both sides have to rotate to a longer secret together.
+JWT_KEY = base64.b64decode(env("JWT_SECRET") + "===")
 
 
-def issue_token(user):
-    expires = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
-        seconds=SESSION_TTL
+# Exactly the payload getToken produces — `sub` as a *string*, plus `iat` and `exp` —
+# so a token minted here is one the portal accepts, and nothing about the user rides
+# along. `exp` is SESSION_TTL rather than the portal's 15 days; current_user caps
+# inbound tokens at the same window either way.
+def issue_token(user_id):
+    issued = int(time.time())
+    return jwt.encode(
+        {"sub": str(user_id), "iat": issued, "exp": issued + SESSION_TTL},
+        JWT_KEY,
+        algorithm=JWT_ALGORITHM,
     )
-    return jwt.encode({**user, "exp": expires}, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
 # One transport: `Authorization: Bearer <token>`. Same for the browser, another origin,
@@ -1331,16 +1342,39 @@ def bearer_token(request):
 
 
 def current_user(request):
+    # guard_response resolves the identity on the way in and acting_user_id reads it
+    # again inside the endpoint. Without this the reads below — a `user` row plus the
+    # four-table entitlements join — would run twice on every authenticated request.
+    state = getattr(request, "state", None)
+    cached = getattr(state, "user", None) if state is not None else None
+    if cached is not None:
+        return cached
+
     token = bearer_token(request)
     if not token:
         return None
     try:
-        claims = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        claims = jwt.decode(token, JWT_KEY, algorithms=[JWT_ALGORITHM])
     except jwt.InvalidTokenError:
         # Expired, tampered with, signed by another key, or not a JWT at all: every one
         # of those is simply "no session" to every caller here.
         return None
-    return {k: v for k, v in claims.items() if k not in JWT_META_CLAIMS}
+    # getToken signs for 15 days. That is the portal's window, not this API's: a token
+    # here stops being a session after SESSION_TTL, counted from the `iat` the portal
+    # stamped. Drop this check to let a token live its full 15 days instead.
+    issued_at = claims.get("iat")
+    if not isinstance(issued_at, (int, float)) or time.time() - issued_at >= SESSION_TTL:
+        return None
+    # `sub` is the whole payload's worth of identity, and the Java side writes it as a
+    # string. Everything else the caller needs is read fresh, so a changed entitlement
+    # or constituency takes effect on the next request instead of at the next login.
+    subject = str(claims.get("sub", ""))
+    if not subject.isdigit():
+        return None
+    user = identity_for(int(subject))
+    if user is not None and state is not None:
+        state.user = user
+    return user
 
 
 # Everything except logging in requires a session: the cadre endpoints serve personal
@@ -1423,6 +1457,29 @@ def entitlements_for(user_id):
     return [r["entitlement_name"] for r in rows]
 
 
+# The identity every caller sees, from `login` and from `me` alike. It is assembled per
+# request rather than carried in the token: getToken's payload is `sub` and nothing else.
+def identity_from_row(row):
+    return {
+        "user_id": row["user_id"],
+        "username": row["username"],
+        "firstname": row["firstname"],
+        "lastname": row["lastname"],
+        "user_type": row["user_type"],
+        **scope_for(row["access_type"], row["access_value"]),
+        "entitlements": entitlements_for(row["user_id"]),
+    }
+
+
+def identity_for(user_id):
+    rows = query(
+        "SELECT user_id, username, firstname, lastname, user_type, access_type, "
+        "access_value FROM `user` WHERE user_id = %s",
+        (user_id,),
+    )
+    return identity_from_row(rows[0]) if rows else None
+
+
 # Where this user sits, for the three ids the login response promises. Not read off
 # `user`.state_id/district_id/constituency_id: those columns are dead — the Java portal
 # writes a user's scope as the access_type/access_value pair and never backfilled them,
@@ -1490,24 +1547,11 @@ def login(body: LoginRequest):
             # Skip the unusable row and keep going.
             continue
         if matched:
-            user = {
-                "user_id": row["user_id"],
-                "username": row["username"],
-                "firstname": row["firstname"],
-                "lastname": row["lastname"],
-                "user_type": row["user_type"],
-                **scope_for(row["access_type"], row["access_value"]),
-                # Part of the identity, not a field beside it: it rides the JWT, so /me
-                # hands it back on a reload and the server is what signed it — a client
-                # cannot grant itself an entitlement it was not issued. The cost is that
-                # a grant changed in the DB is not seen until the token expires
-                # (SESSION_TTL) or the user logs in again.
-                "entitlements": entitlements_for(row["user_id"]),
-            }
+            token = issue_token(row["user_id"])
             LOGIN_ATTEMPTS.pop(body.username, None)
             # The token is the whole session: the caller stores it and presents it as
             # `Authorization: Bearer <token>` on every later call.
-            return {**user, "token": issue_token(user)}
+            return {**identity_from_row(row), "token": token}
 
     LOGIN_ATTEMPTS.setdefault(body.username, []).append(time.time())
     # One message for both cases, so it does not reveal which usernames exist.

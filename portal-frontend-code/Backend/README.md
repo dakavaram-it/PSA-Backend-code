@@ -29,7 +29,7 @@ Copy `../.env.example`.
 | `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` | yes | the membership database. Missing any one raises at import. |
 | `REPORT_RATINGS_DB_HOST` / `_USER` / `_PASSWORD` | no | cadre performance scores (getCadreScores). All three unset ⇒ `RATINGS_DB is None` and getCadreScores answers `{"configured": false}`. |
 | `REPORT_RATINGS_DB_PORT` / `_NAME` | no | default `3306` / `report_ratings`. |
-| `JWT_SECRET` / `ALGORITHM` | yes | signing key and algorithm (`HS512`) for the session JWT `login` issues. Missing either raises at import; changing the secret invalidates every token already issued. |
+| `JWT_SECRET` / `ALGORITHM` | yes | signing key and algorithm (`HS512`) for the session JWT `login` issues. Must be the Java portal's own pair, and `JWT_SECRET` is read as **base64** — the key is `base64.b64decode(JWT_SECRET)`, matching how jjwt signs — so the two sides accept each other's tokens. Missing either raises at import; changing the secret invalidates every token already issued. |
 
 ## Endpoints
 

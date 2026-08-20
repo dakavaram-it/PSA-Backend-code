@@ -89,12 +89,36 @@ raw-bytes salt — every existing row would stop matching.
 - The throttle is **per username, not per IP**: dev and preview both proxy through Vite, so
   every request arrives from `127.0.0.1` and an IP bucket would throttle all users at once.
 - **The session is a JWT and nothing else.** `login` returns `token` in its body —
-  `issue_token(user)`, the whole user row plus `exp` (`SESSION_TTL`, 8h), signed with
-  `JWT_SECRET`/`ALGORITHM` from `.env`. There is **no cookie and no server-side session
-  store**; the one transport is `Authorization: Bearer <token>`, read by
-  `bearer_token(request)`. `current_user` decodes it and strips `JWT_META_CLAIMS` (`exp`)
-  so callers get the same identity shape `login` returned. Any `jwt.InvalidTokenError` —
+  `issue_token(user_id)`, `{"sub": "<user_id>", "iat", "exp"}` signed with `JWT_KEY` for
+  `SESSION_TTL`. There is **no cookie and no server-side session store**; the one
+  transport is `Authorization: Bearer <token>`, read by `bearer_token(request)`.
+- **The payload is the Java portal's, deliberately.** It is byte-for-byte the shape
+  `mypartydashboard.com/PSA/WebService/User/getToken` produces (`sub` a *string*, not an
+  int), signed with the same key, so a token from either side is a session on the other.
+  Calling that service instead was tried and reverted: it answers `404` at
+  `/PSA/WebService/User/getToken` and at every method, case and sibling path probed —
+  a Spring app is mounted at `/PSA` (its `/PSA/error` answers), but no `getToken`
+  controller is reachable. Minting locally keeps the tokens interchangeable without
+  making a login depend on that service. **Do not "fix" the payload** to carry the user:
+  the extra claims would not round-trip through the portal.
+- **`JWT_SECRET` is read as base64, not as characters.** jjwt's `signWith(alg, String)`
+  treats the secret as base64, so the portal's key is `base64.b64decode(JWT_SECRET)` —
+  9 bytes, not the 15 characters. `JWT_KEY` is that decoded value and it is what
+  `jwt.decode` gets. Handing PyJWT the raw string verifies against a different key and
+  rejects every token the portal issues; that was the bug, not a config mismatch. The
+  9-byte key is far under HS512's 64-byte block — fixing that means both sides rotating
+  to a longer secret together.
+- **The token carries `sub` and nothing else** — `{"sub": "<user_id>", "iat", "exp"}`,
+  `sub` a *string*. So `current_user` decodes it and then reads the identity back out of
+  the database (`identity_for`), rather than off the claims. Upside: a changed entitlement
+  or constituency takes effect on the next request instead of at the next login. Cost: a
+  `user` row plus the four-table entitlements join per request, which is why `current_user`
+  caches on `request.state.user` — `guard_response` resolves the identity on the way in and
+  `acting_user_id` reads it again inside the endpoint. Any `jwt.InvalidTokenError` —
   expired, tampered with, foreign key, not a JWT — is simply "no session", i.e. a `401`.
+- **`SESSION_TTL` caps the portal's window, it does not set it.** getToken signs for 15
+  days; `current_user` refuses a token whose `iat` is more than `SESSION_TTL` (8h) old, so
+  a session here is 8h regardless. Drop that check to let a token live its full 15 days.
 - **`user.state_id` / `district_id` / `constituency_id` are dead columns** — 18 rows out of
   76,785 carry a `constituency_id`. The Java portal records a user's scope as the
   **`access_type` / `access_value`** pair instead and never backfilled them, so reading them
@@ -110,13 +134,15 @@ raw-bytes salt — every existing row would stop matching.
 - **`entitlements` is part of the identity, not a field beside it.** `entitlements_for(user_id)`
   reads the names the user's groups grant (`user_group_relation` → `user_group_entitlement` →
   `group_entitlement_relation` → `entitlement`, `entitlement_type AS entitlement_name`) and the
-  list goes **into the `user` dict**, so it is signed into the token and `me` hands it back on
-  a reload. The cost: a grant changed in the DB is not seen until the token expires or the user
-  logs in again.
+  list goes **into the `user` dict** that `identity_from_row` builds, which is what both `login`
+  and `me` answer with.
 - **A token cannot be revoked before it expires.** `logout` is stateless: it answers
-  `{"ok": true}` and the client drops its copy, but the token stays valid until `exp`.
-  That is the cost of no session store — shorten `SESSION_TTL` or add a denylist if it
-  ever stops being acceptable. Changing `JWT_SECRET` invalidates every issued token.
+  `{"ok": true}` and the client drops its copy, but the token stays valid until `exp` or
+  until its `iat` falls outside `SESSION_TTL`. That is the cost of no session store —
+  shorten `SESSION_TTL` or add a denylist if it ever stops being acceptable. A token whose
+  `sub` names a row that no longer exists is not a session either: `identity_for` answers
+  `None` and the guard `401`s. Changing `JWT_SECRET` invalidates every issued token — on
+  both sides, since the portal signs with the same value.
 - `LOGIN_ATTEMPTS` is a process dict and is not self-cleaning; `sweep_expired` runs on
   the login path. Sessions now survive a restart, since none of one is held in memory.
 - **`CORSMiddleware` is registered last on purpose**, at the bottom of the file.
