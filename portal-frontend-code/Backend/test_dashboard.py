@@ -17,6 +17,11 @@ def capture(rows):
         calls.append((sql, args))
         return rows
 
+    # pp_active() probes the schema through main.query on first use, which would land in
+    # `calls` as a phantom first query and shift every index below. Pinning it to "" is
+    # also what these assertions describe: the SQL without the proposal_position.is_active
+    # filter, which is what the column's absence produces.
+    main._PP_ACTIVE = ""
     main.query = fake_query
     return calls
 
@@ -29,7 +34,15 @@ def check_scoped_by_constituency():
     # Three branches, one assembly id each: the address's own constituency_id, the
     # whole-body rows that self-reference and resolve through
     # assembly_local_election_body, and the district-level rows that have neither.
-    assert args == (181, 181, 181), args
+    # The two per-status counts bind their ids in the SELECT, before the three assembly
+    # branches in the WHERE.
+    assert args == (
+        main.PROPOSED_STATUS_ID,
+        main.CONFIRMED_STATUS_ID,
+        181,
+        181,
+        181,
+    ), args
     assert sql.count("%s") == len(args), sql
     assert "WHERE PCon.enrollment_id = 1 AND (UA.constituency_id = %s" in sql, sql
     assert "assembly_local_election_body AL" in sql, sql
@@ -82,7 +95,7 @@ def check_proposed_status_cnt_requires_explicit_status():
     calls = capture([])
     main.get_dashboard_positions_by_constituency_id(181)
     sql, _ = calls[0]
-    assert "SUM(CASE WHEN PC.proposal_status_id = 1 THEN 1 ELSE 0 END)" in sql, sql
+    assert "SUM(CASE WHEN PC.proposal_status_id = %s THEN 1 ELSE 0 END)" in sql, sql
     assert "COALESCE(PC.proposal_status_id" not in sql, sql
 
 

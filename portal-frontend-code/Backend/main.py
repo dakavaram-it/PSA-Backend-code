@@ -283,6 +283,25 @@ def get_towns_in_a_constituency(constituency_id: int):
 # district row, which is why a Municipality/Corporation/ZP that has proposal_position
 # rows in the database still read as "Not configured" on the Dashboard.
 # Takes the assembly's constituency_id three times, once per branch.
+# `proposal_position.is_active` ('Y'/'N') is being added to the schema, so this clause has
+# to be right on both sides of that change: it is empty until the column exists and starts
+# filtering the moment it does, without a code change. Checked once per process and cached —
+# the schema does not move under a running server, and a restart is what picks the column up.
+# Every proposal_position read appends it, so an 'N' position leaves every screen at once.
+_PP_ACTIVE = None
+
+
+def pp_active():
+    global _PP_ACTIVE
+    if _PP_ACTIVE is None:
+        _PP_ACTIVE = (
+            "AND PP.is_active = 'Y' "
+            if query("SHOW COLUMNS FROM proposal_position LIKE 'is_active'")
+            else ""
+        )
+    return _PP_ACTIVE
+
+
 def assembly_match(ua="UA", pc="PCon"):
     return (
         f"({ua}.constituency_id = %s "
@@ -350,18 +369,22 @@ def get_proposal_positions_overview_by_proposal_constituency_id(
     return query(
         "SELECT PP.proposal_position_id, PR.proposal_role_id, PR.role_name, "
         "PP.max_positions, PP.max_proposals, CR.reservation_type, "
-        "COUNT(DISTINCT PC.tdp_cadre_id) AS proposed_cnt "
+        "COUNT(DISTINCT PC.tdp_cadre_id) AS proposed_cnt, "
+        # Non-zero means the seat is settled and the position takes no further proposals —
+        # the same rule checkProposalPositionAvailability enforces on the write. The wizard's
+        # role card reads this to disable itself, so it refuses before the 409, not after.
+        "CAST(SUM(CASE WHEN PC.proposal_status_id = %s THEN 1 ELSE 0 END) AS UNSIGNED) AS confirmed_cnt "
         "FROM proposal_position PP "
         "JOIN proposal_role PR ON PP.proposal_role_id = PR.proposal_role_id "
         "LEFT OUTER JOIN constituency_reservation CR "
         "ON PP.constituency_reservation_id = CR.constituency_reservation_id "
         "LEFT OUTER JOIN proposal_candidate PC "
         "ON PP.proposal_position_id = PC.proposal_position_id AND PC.is_active = 'Y' "
-        "WHERE PP.proposal_constituency_id = %s "
+        f"WHERE PP.proposal_constituency_id = %s {pp_active()}"
         "GROUP BY PP.proposal_position_id, PR.proposal_role_id, PR.role_name, "
         "PP.max_positions, PP.max_proposals, CR.reservation_type, PR.order_no "
         "ORDER BY PR.order_no",
-        (proposal_constituency_id,),
+        (CONFIRMED_STATUS_ID, proposal_constituency_id),
     )
 
 
@@ -371,21 +394,30 @@ def get_proposal_positions_by_proposal_constituency_id(proposal_constituency_id:
         "SELECT PP.proposal_position_id, PR.role_name "
         "FROM proposal_position PP "
         "JOIN proposal_role PR ON PP.proposal_role_id = PR.proposal_role_id "
-        "WHERE PP.proposal_constituency_id = %s ORDER BY PR.order_no",
+        f"WHERE PP.proposal_constituency_id = %s {pp_active()}"
+        "ORDER BY PR.order_no",
         (proposal_constituency_id,),
     )
 
 
+# Three states, not two. A position holding a Confirmed candidate is *completed*: the seat
+# is settled, so nobody else may be proposed for it however many max_proposals slots are
+# still unused — that is 'Completed'. 'Not Available' keeps its old meaning, the slots are
+# used up. assignProposalCandidate maps each to its own 409 so the panel can say which rule
+# it hit, and getProposalPositionsOverviewByProposalConstituencyId carries the same confirmed
+# count so the wizard can grey the role card out before anyone gets that far.
 @app.get("/checkProposalPositionAvailability")
 def check_proposal_position_availability(proposal_position_id: int):
     return query(
-        "SELECT CASE WHEN PP.max_proposals > COUNT(DISTINCT PC.tdp_cadre_id) "
+        "SELECT CASE "
+        "WHEN SUM(CASE WHEN PC.proposal_status_id = %s THEN 1 ELSE 0 END) > 0 THEN 'Completed' "
+        "WHEN PP.max_proposals > COUNT(DISTINCT PC.tdp_cadre_id) "
         "THEN 'Available' ELSE 'Not Available' END AS availability "
         "FROM proposal_position PP "
         "LEFT OUTER JOIN proposal_candidate PC "
         "ON PP.proposal_position_id = PC.proposal_position_id AND PC.is_active = 'Y' "
-        "WHERE PP.proposal_position_id = %s",
-        (proposal_position_id,),
+        f"WHERE PP.proposal_position_id = %s {pp_active()}",
+        (CONFIRMED_STATUS_ID, proposal_position_id),
     )
 
 
@@ -445,7 +477,7 @@ def proposal_context(proposal_position_id):
         "JOIN user_address UA ON PC.address_id = UA.user_address_id "
         "LEFT OUTER JOIN constituency_reservation CR "
         "ON PP.constituency_reservation_id = CR.constituency_reservation_id "
-        "WHERE PP.proposal_position_id = %s",
+        f"WHERE PP.proposal_position_id = %s {pp_active()}",
         (proposal_position_id,),
     )
     if not rows:
@@ -472,11 +504,14 @@ def eligibility_flag(ctx):
     return "CASE WHEN " + " AND ".join(conditions) + " THEN 'Y' ELSE 'N' END AS eligible", args
 
 
-# proposal_status is a lookup table (1 Proposed, 2 Shortlisted, 3 Confirmed), so the id is
-# checked against the table rather than against a list here — adding a status is a row, not
-# a deploy. Proposed is the default, which is what every row written before the column
-# existed means.
+# proposal_status is a lookup table, now two rows: 1 Proposed, 2 Confirmed. Shortlisted was
+# dropped and Confirmed moved down from 3 to 2 with it, so there is no id 3 any more — every
+# count below reads CONFIRMED_STATUS_ID rather than a literal, and the frontend's own status
+# ids have to match these. The id on a write is still checked against the table rather than
+# against a list here — adding a status back is a row, not a deploy. Proposed is the default,
+# which is what every row written before the column existed means.
 PROPOSED_STATUS_ID = 1
+CONFIRMED_STATUS_ID = 2
 
 
 class AssignProposalCandidate(BaseModel):
@@ -546,9 +581,16 @@ def assign_proposal_candidate(body: AssignProposalCandidate, request: Request):
             409, f"Position is reserved for {position['reservation_type']}"
         )
 
-    if check_proposal_position_availability(body.proposal_position_id)[0][
+    # A confirmed candidate closes the position for good, which is a different refusal from
+    # "the slots are full": the second reopens when somebody is removed, the first does not.
+    availability = check_proposal_position_availability(body.proposal_position_id)[0][
         "availability"
-    ] != "Available":
+    ]
+    if availability == "Completed":
+        raise HTTPException(
+            409, "Position already has a confirmed candidate and is completed"
+        )
+    if availability != "Available":
         raise HTTPException(409, "Position has reached max_proposals")
 
     already = query(
@@ -836,9 +878,10 @@ def get_proposal_positions_with_candidates(request: Request):
         # COALESCE says here and what getProposalCandidatesByProposalPositionId and the card both read them back as.
         # CAST because SUM() is DECIMAL in MySQL, which would reach the browser as a float
         # ("2.0") next to proposed_cnt's plain integer.
-        "CAST(SUM(CASE WHEN COALESCE(PC.proposal_status_id, %s) = 1 THEN 1 ELSE 0 END) AS UNSIGNED) AS proposed_status_cnt, "
-        "CAST(SUM(CASE WHEN PC.proposal_status_id = 2 THEN 1 ELSE 0 END) AS UNSIGNED) AS shortlisted_status_cnt, "
-        "CAST(SUM(CASE WHEN PC.proposal_status_id = 3 THEN 1 ELSE 0 END) AS UNSIGNED) AS conformed_status_cnt "
+        "CAST(SUM(CASE WHEN COALESCE(PC.proposal_status_id, %s) = %s THEN 1 ELSE 0 END) AS UNSIGNED) AS proposed_status_cnt, "
+        # `conformed_` is the SQL alias, kept when the status was renamed to Confirmed. There
+        # is no shortlisted count any more: the status itself is gone from proposal_status.
+        "CAST(SUM(CASE WHEN PC.proposal_status_id = %s THEN 1 ELSE 0 END) AS UNSIGNED) AS conformed_status_cnt "
         "FROM proposal_position PP "
         "JOIN proposal_candidate PC "
         "ON PP.proposal_position_id = PC.proposal_position_id AND PC.is_active = 'Y' "
@@ -855,14 +898,14 @@ def get_proposal_positions_with_candidates(request: Request):
         "ON UA.local_election_body = L.local_election_body_id "
         "LEFT OUTER JOIN constituency_reservation CR "
         "ON PP.constituency_reservation_id = CR.constituency_reservation_id "
-        f"WHERE AC.constituency_id IN ({placeholders(access)}) "
+        f"WHERE AC.constituency_id IN ({placeholders(access)}) {pp_active()}"
         "GROUP BY PP.proposal_position_id, PP.max_positions, PP.max_proposals, "
         "PR.proposal_role_id, PR.role_name, PR.order_no, "
         "PCon.proposal_consituency_id, PET.proposal_election_type_id, PET.election_type, "
         "LB.name, AC.constituency_id, AC.name, T.tehsil_id, T.tehsil_name, L.name, "
         "CR.reservation_type "
         "ORDER BY AC.name, LB.name, PR.order_no",
-        (PROPOSED_STATUS_ID, *access),
+        (PROPOSED_STATUS_ID, PROPOSED_STATUS_ID, CONFIRMED_STATUS_ID, *access),
     )
 
 
@@ -917,9 +960,8 @@ def get_dashboard_positions_by_constituency_id(constituency_id: int):
         # candidate whose status was never set. Counting only an explicit 1 handles both
         # correctly: no row, or no status, both read as not-yet-proposed here (0), never
         # coerced to 1.
-        "CAST(SUM(CASE WHEN PC.proposal_status_id = 1 THEN 1 ELSE 0 END) AS UNSIGNED) AS proposed_status_cnt, "
-        "CAST(SUM(CASE WHEN PC.proposal_status_id = 2 THEN 1 ELSE 0 END) AS UNSIGNED) AS shortlisted_status_cnt, "
-        "CAST(SUM(CASE WHEN PC.proposal_status_id = 3 THEN 1 ELSE 0 END) AS UNSIGNED) AS conformed_status_cnt "
+        "CAST(SUM(CASE WHEN PC.proposal_status_id = %s THEN 1 ELSE 0 END) AS UNSIGNED) AS proposed_status_cnt, "
+        "CAST(SUM(CASE WHEN PC.proposal_status_id = %s THEN 1 ELSE 0 END) AS UNSIGNED) AS conformed_status_cnt "
         "FROM proposal_consituency PCon "
         "JOIN user_address UA ON PCon.address_id = UA.user_address_id "
         "JOIN proposal_election_type PET ON PCon.proposal_election_type_id = PET.proposal_election_type_id "
@@ -933,14 +975,20 @@ def get_dashboard_positions_by_constituency_id(constituency_id: int):
         "ON PP.constituency_reservation_id = CR.constituency_reservation_id "
         "LEFT OUTER JOIN proposal_candidate PC "
         "ON PP.proposal_position_id = PC.proposal_position_id AND PC.is_active = 'Y' "
-        f"WHERE PCon.enrollment_id = 1 AND {assembly_match()} "
+        f"WHERE PCon.enrollment_id = 1 AND {assembly_match()} {pp_active()}"
         "GROUP BY PP.proposal_position_id, PP.max_positions, PP.max_proposals, PP.started_time, "
         "PR.proposal_role_id, PR.role_name, PR.order_no, "
         "PCon.proposal_consituency_id, LB.name, "
         "PET.proposal_election_type_id, PET.election_type, T.tehsil_id, T.tehsil_name, "
         "L.name, L.local_election_body_id, D.district_id, D.district_name, CR.reservation_type "
         "ORDER BY PET.election_type, LB.name, PR.order_no",
-        (constituency_id, constituency_id, constituency_id),
+        (
+            PROPOSED_STATUS_ID,
+            CONFIRMED_STATUS_ID,
+            constituency_id,
+            constituency_id,
+            constituency_id,
+        ),
     )
 
 
@@ -1007,7 +1055,8 @@ def get_dashboard_candidates_by_status(
         # that screen's tiles, so a body it counts and this one cannot reach would make
         # the tile and the list it opens disagree.
         f"WHERE {assembly_match()} AND PCon.proposal_election_type_id = %s "
-        "AND PC.proposal_status_id = %s AND PC.is_active = 'Y' AND PCon.enrollment_id = 1 "
+        "AND PC.proposal_status_id = %s AND PC.is_active = 'Y' "
+        f"AND PCon.enrollment_id = 1 {pp_active()}"
         "ORDER BY LB.name, PR.order_no, TC.first_name",
         (
             constituency_id,

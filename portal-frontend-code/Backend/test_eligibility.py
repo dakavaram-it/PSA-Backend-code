@@ -68,6 +68,11 @@ def capture(responses):
         calls.append((sql, args))
         return responses[len(calls) - 1] if len(calls) <= len(responses) else []
 
+    # pp_active() probes the schema through main.query on first use, which would land in
+    # `calls` as a phantom first query and shift every index below. Pinning it to "" is
+    # also what these assertions describe: the SQL without the proposal_position.is_active
+    # filter, which is what the column's absence produces.
+    main._PP_ACTIVE = ""
     main.query = fake_query
     return calls
 
@@ -167,6 +172,39 @@ def check_assign_refuses_another_assembly():
         main.query = real_query
 
 
+def check_assign_refuses_a_completed_position():
+    """One Confirmed candidate completes the position: nobody else may be proposed for it,
+    however many max_proposals slots are still unused. Separate from the full-position
+    refusal because they are different situations — a full position reopens when somebody
+    is removed, a completed one does not."""
+    real_query = main.query
+    try:
+        calls = capture([
+            [context_row(caste=None)],
+            [{"proposal_status_id": 1}],
+            [{"gender": "M", "caste_category_id": 2, "assembly_constituency_id": 181}],
+            [{"availability": "Completed"}],
+        ])
+        body = main.AssignProposalCandidate(proposal_position_id=1, tdp_cadre_id=2)
+        try:
+            main.assign_proposal_candidate(body, None)
+        except HTTPException as err:
+            assert err.status_code == 409, err.status_code
+            assert "completed" in err.detail, err.detail
+        else:
+            raise AssertionError("assign accepted a candidate for a completed position")
+
+        # The availability query is what decides it, and it is one query: Completed beats
+        # the slot count, so a position with free slots and a confirmed candidate is shut.
+        sql, args = calls[3]
+        assert "THEN 'Completed'" in sql, sql
+        assert sql.index("THEN 'Completed'") < sql.index("THEN 'Available'"), sql
+        assert args[0] == main.CONFIRMED_STATUS_ID, args
+        assert sql.count("%s") == len(args), sql
+    finally:
+        main.query = real_query
+
+
 def check_name_search_is_scoped():
     """A name is a substring match, so it is bounded where the exact filters are not:
     current enrollment year, the position's own assemblies, and a row cap."""
@@ -217,4 +255,5 @@ if __name__ == "__main__":
     check_search_flags_the_assembly()
     check_name_search_is_scoped()
     check_assign_refuses_another_assembly()
+    check_assign_refuses_a_completed_position()
     print("ok")

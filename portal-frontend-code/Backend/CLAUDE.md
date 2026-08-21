@@ -17,16 +17,32 @@ Changing a path, a column alias or a status code breaks a bundle you cannot see 
   personal data — names, mobile numbers, voter ids.
 - **No authorization, only authentication.** Any valid account can read and write against
   any constituency.
-- Only `GET` and `POST` exist. Nothing is deleted; `proposal_candidate.is_active` is the
-  flag every read filters on.
+- Only `GET` and `POST` exist. Nothing is deleted; **`proposal_candidate.is_active` and
+  `proposal_position.is_active` are the two flags every read filters on** — an `'N'`
+  position is off every screen (Dashboard, Candidates, the wizard's role list) and cannot
+  be proposed against at all, because `proposal_context` filters on it too and so answers
+  `404` for one.
 - **`proposal_candidate.proposal_status_id` says which kind of row it is** — a lookup into
-  `proposal_status` (1 Proposed, 2 Shortlisted, 3 Confirmed). `assignProposalCandidate` takes it in the body and
-  defaults it to `PROPOSED_STATUS_ID`, validating it against the table rather than a list
-  here, so a new status is a row and not a deploy. It changes no count: the slot arithmetic
-  in `getProposalPositionsOverviewByProposalConstituencyId`/`checkProposalPositionAvailability` is over active rows whatever their status, so a shortlisted cadre occupies a
-  `max_proposals` slot exactly as a proposed one does. Rows written before the column have
-  it NULL, which is why `getProposalCandidatesByProposalPositionId` joins `proposal_status` with a LEFT OUTER JOIN — dropping them
-  would desync the list from `getProposalPositionsOverviewByProposalConstituencyId`'s `proposed_cnt`.
+  `proposal_status`, which now holds **two rows: 1 Proposed, 2 Confirmed**. Shortlisted was
+  dropped and Confirmed moved down from 3 to 2 with it, so **there is no id 3 any more**;
+  `PROPOSED_STATUS_ID` / `CONFIRMED_STATUS_ID` are what every count reads, never a literal,
+  and the frontend's own ids have to match them. `assignProposalCandidate` takes the status
+  in the body and defaults it to `PROPOSED_STATUS_ID`, validating it against the table
+  rather than a list here, so putting a status back is a row and not a deploy. A proposed
+  and a confirmed candidate both occupy a `max_proposals` slot — the arithmetic in
+  `getProposalPositionsOverviewByProposalConstituencyId`/`checkProposalPositionAvailability`
+  is over active rows whatever their status. Rows written before the column have it NULL,
+  which is why `getProposalCandidatesByProposalPositionId` joins `proposal_status` with a
+  LEFT OUTER JOIN — dropping them would desync the list from
+  `getProposalPositionsOverviewByProposalConstituencyId`'s `proposed_cnt`.
+- **One Confirmed candidate completes a position.** `checkProposalPositionAvailability`
+  answers three states, not two: `'Completed'` when any active candidate on the position is
+  Confirmed, `'Not Available'` when the `max_proposals` slots are used up, `'Available'`
+  otherwise. `assignProposalCandidate` refuses the first two with different `409` texts,
+  because they are different situations — a full position reopens when somebody is removed,
+  a completed one does not. `getProposalPositionsOverviewByProposalConstituencyId` carries
+  the same signal as `confirmed_cnt` so the wizard's role card can grey itself out instead
+  of letting the user reach the 409.
 - **`removeProposalCandidate` is the only write that undoes `assignProposalCandidate`**, and it is still not a
   delete: `is_active` goes to `'N'`, which every read filters on, so the candidate leaves
   `getProposalCandidatesByProposalPositionId` and `getProposalPositionsOverviewByProposalConstituencyId`'s count and their slot reopens while the row survives. `WHERE … AND
@@ -342,9 +358,11 @@ only.
 only write that changes one that already exists, and it touches `proposal_status_id`
 alone.
 
-- **No slot or eligibility re-check.** All three statuses are live rows counted by `getProposalPositionsOverviewByProposalConstituencyId`'s
+- **No slot or eligibility re-check.** Both statuses are live rows counted by `getProposalPositionsOverviewByProposalConstituencyId`'s
   `proposed_cnt`, so moving between them frees nothing and consumes nothing; re-running
   `assignProposalCandidate`'s checks here would refuse a candidate already sitting in the slot.
+  Note this is also the only way a position becomes *completed*: moving one candidate to
+  Confirmed is what closes it to every further proposal.
 - `is_active = 'Y'` is in the WHERE — a removed candidate is on no screen to restatus.
 - MySQL reports 0 affected rows both for "no such row" and for "already that status", so
   the handler re-checks existence before answering `404`: re-saving an unmoved status is
@@ -354,8 +372,10 @@ alone.
 
 - `img_url` is built in SQL as an S3 URL and is `''`, not NULL, when the cadre has no
   image — the card falls back to initials on `''`.
-- `getProposalPositionsOverviewByProposalConstituencyId` carries the role names and both counts, which is why `getProposalPositionsByProposalConstituencyId` and `checkProposalPositionAvailability` are unused by
-  the frontend. `checkProposalPositionAvailability` is still called internally by `assignProposalCandidate`.
+- `getProposalPositionsOverviewByProposalConstituencyId` carries the role names and the counts (`proposed_cnt`
+  and `confirmed_cnt`), which is why `getProposalPositionsByProposalConstituencyId` and `checkProposalPositionAvailability` are unused by
+  the frontend. `checkProposalPositionAvailability` is still called internally by `assignProposalCandidate`, and it is
+  the single place the Available / Not Available / Completed rule is written down.
 - A `429` (login throttle) and a `500` must not read as "session over"; the frontend only
   logs out on `401`, and only outside `login`/`me`/`logout`.
 - Under the gateway, `StripPrefix` removes the `/portal-frontend-code` mount before this
