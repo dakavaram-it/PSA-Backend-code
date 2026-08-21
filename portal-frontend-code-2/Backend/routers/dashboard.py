@@ -29,6 +29,7 @@ from queries import (
     POSITION_SUMMARY_SELECT,
     RESERVATION_SUMMARY_SELECT,
     STAGE_EXPR,
+    pp_active,
 )
 from scope import Scope, placeholders, resolve_scope
 
@@ -133,18 +134,49 @@ def scope_filter(scope: Scope):
     keeps the state-wide summary off ASSEMBLY_EXPR's three correlated subqueries entirely.
     """
     if scope.state_wide:
-        return "", "", ()
+        return "", pp_active(), ()
     ids = scope.assembly_ids
-    return GEO_JOIN, f"AND AC.constituency_id IN ({placeholders(ids)})", tuple(ids)
+    return GEO_JOIN, pp_active() + f"AND AC.constituency_id IN ({placeholders(ids)})", tuple(ids)
+
+
+def int_list(values, name: str) -> List[int]:
+    """Flatten a repeated / comma-joined query parameter into ints, deduplicated."""
+    out: List[int] = []
+    for value in values or []:
+        for part in str(value).split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if not part.isdigit():
+                raise HTTPException(400, f"{name} must be numeric ids; got {part!r}")
+            out.append(int(part))
+    return sorted(set(out))
 
 
 def position_filter(
-    main_election_type_id: Optional[int],
-    proposal_election_type_id: int,
-    proposal_role_id: int,
+    proposal_role_ids: List[int],
+    proposal_election_type_id: Optional[int] = None,
+    main_election_type_id: Optional[int] = None,
 ):
-    sql = "AND PET.proposal_election_type_id = %s AND PR.proposal_role_id = %s"
-    args = [proposal_election_type_id, proposal_role_id]
+    """The rows one card on the dashboard tree claims.
+
+    The ROLE is what identifies a post, and the election type is an optional narrowing
+    rather than part of the key. A position's election type is its *constituency's*, not
+    the post's, and the two disagree across the data: role 5 (Corporator) appears under
+    Municipal Ward, Corporation Ward and MPTC constituencies, and the tree draws all of
+    them as one Corporator card. Requiring an election type here is what forced the
+    frontend to split that card in two — see Frontend/src/leap/electionTree.js.
+
+    A list of role ids, not one, because a card may claim several. None do today; the plural
+    is what stops the second one from being silently dropped when it appears.
+    """
+    if not proposal_role_ids:
+        raise HTTPException(400, "proposalRoleId is required")
+    sql = pp_active() + f"AND PR.proposal_role_id IN ({placeholders(proposal_role_ids)})"
+    args = list(proposal_role_ids)
+    if proposal_election_type_id is not None:
+        sql += " AND PET.proposal_election_type_id = %s"
+        args.append(proposal_election_type_id)
     if main_election_type_id is not None:
         sql += " AND MET.main_election_type_id = %s"
         args.append(main_election_type_id)
@@ -260,9 +292,19 @@ def pipeline(scope: Scope = Depends(resolve_scope)):
 
 @router.get("/geoBreakdown")
 def geo_breakdown(
-    proposalElectionTypeId: int,
-    proposalRoleId: int,
-    mainElectionTypeId: Optional[int] = None,
+    proposalRoleId: List[str] = Query(
+        ...,
+        description=(
+            "The proposal_role_id(s) this card claims. Repeat the parameter or send them "
+            "comma-separated. This — not the election type — identifies a post."
+        ),
+    ),
+    proposalElectionTypeId: Optional[int] = Query(
+        None, description="Optional narrowing to one election type."
+    ),
+    mainElectionTypeId: Optional[int] = Query(
+        None, description="Optional narrowing to one main election type."
+    ),
     parliamentId: Optional[int] = Query(
         None, description="Narrow the assembly half to one parliament constituency."
     ),
@@ -275,7 +317,7 @@ def geo_breakdown(
     documents the corner that rule cuts for whole-body and district positions.
     """
     pos_sql, pos_args = position_filter(
-        mainElectionTypeId, proposalElectionTypeId, proposalRoleId
+        int_list(proposalRoleId, "proposalRoleId"), proposalElectionTypeId, mainElectionTypeId
     )
     _, scope_sql, scope_args = scope_filter(scope)
     par_sql, par_args = (
@@ -300,9 +342,9 @@ def geo_breakdown(
         "scope": scope.describe(),
         "stagesUnavailable": STAGES_UNAVAILABLE,
         "position": {
-            "main_election_type_id": mainElectionTypeId,
+            "proposal_role_ids": int_list(proposalRoleId, "proposalRoleId"),
             "proposal_election_type_id": proposalElectionTypeId,
-            "proposal_role_id": proposalRoleId,
+            "main_election_type_id": mainElectionTypeId,
         },
         "parliaments": [
             {
@@ -327,9 +369,19 @@ def geo_breakdown(
 
 @router.get("/reservationSummary")
 def reservation_summary(
-    proposalElectionTypeId: int,
-    proposalRoleId: int,
-    mainElectionTypeId: Optional[int] = None,
+    proposalRoleId: List[str] = Query(
+        ...,
+        description=(
+            "The proposal_role_id(s) this card claims. Repeat the parameter or send them "
+            "comma-separated. This — not the election type — identifies a post."
+        ),
+    ),
+    proposalElectionTypeId: Optional[int] = Query(
+        None, description="Optional narrowing to one election type."
+    ),
+    mainElectionTypeId: Optional[int] = Query(
+        None, description="Optional narrowing to one main election type."
+    ),
     scope: Scope = Depends(resolve_scope),
 ):
     """Dashboard 2's reservation cards for one post.
@@ -339,7 +391,7 @@ def reservation_summary(
     "unreserved" and "not configured yet" are different states to fix.
     """
     pos_sql, pos_args = position_filter(
-        mainElectionTypeId, proposalElectionTypeId, proposalRoleId
+        int_list(proposalRoleId, "proposalRoleId"), proposalElectionTypeId, mainElectionTypeId
     )
     joins, scope_sql, scope_args = scope_filter(scope)
     rows = run(
@@ -365,9 +417,19 @@ def reservation_summary(
 
 @router.get("/locations")
 def locations(
-    proposalElectionTypeId: int,
-    proposalRoleId: int,
-    mainElectionTypeId: Optional[int] = None,
+    proposalRoleId: List[str] = Query(
+        ...,
+        description=(
+            "The proposal_role_id(s) this card claims. Repeat the parameter or send them "
+            "comma-separated. This — not the election type — identifies a post."
+        ),
+    ),
+    proposalElectionTypeId: Optional[int] = Query(
+        None, description="Optional narrowing to one election type."
+    ),
+    mainElectionTypeId: Optional[int] = Query(
+        None, description="Optional narrowing to one main election type."
+    ),
     stage: Optional[int] = Query(
         None, ge=0, le=6, description="Keep only locations at this stage (0-6)."
     ),
@@ -391,7 +453,7 @@ def locations(
     needs them all at once and a per-row lookup would be one query per location.
     """
     pos_sql, pos_args = position_filter(
-        mainElectionTypeId, proposalElectionTypeId, proposalRoleId
+        int_list(proposalRoleId, "proposalRoleId"), proposalElectionTypeId, mainElectionTypeId
     )
     _, scope_sql, scope_args = scope_filter(scope)
     stage_sql, stage_args = stage_filter(stage)
@@ -446,18 +508,9 @@ def location_candidates(
     the candidate's caste category and gender, and /locations returns the position's
     reservation, which is everything the comparison needs to show the fit.
     """
-    ids = []
-    for value in proposalPositionId:
-        for part in str(value).split(","):
-            part = part.strip()
-            if not part:
-                continue
-            if not part.isdigit():
-                raise HTTPException(400, f"proposalPositionId must be numeric; got {part!r}")
-            ids.append(int(part))
+    ids = int_list(proposalPositionId, "proposalPositionId")
     if not ids:
         raise HTTPException(400, "proposalPositionId is required")
-    ids = sorted(set(ids))
     by_position = _candidates_for(ids)
     return {
         "locations": [

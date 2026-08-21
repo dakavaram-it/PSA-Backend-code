@@ -105,6 +105,29 @@ CANDIDATE_ROLLUP = """
   ) CAND ON CAND.proposal_position_id = PP.proposal_position_id
 """
 
+# `proposal_position.is_active` ('Y'/'N') is being added to the schema — the ALTER is
+# in flight as this is written. This clause has to be right on both sides of that change:
+# it is empty until the column exists and starts filtering the moment it does, without a
+# code change. Checked once per process and cached, exactly as
+# ../../portal-frontend-code/Backend/main.py's pp_active() does it — the two dashboards
+# must agree about which positions are live, or a deactivated position would vanish from
+# Dashboard 1 and stay on Dashboard 2.
+_PP_ACTIVE = None
+
+
+def pp_active():
+    from db import run
+
+    global _PP_ACTIVE
+    if _PP_ACTIVE is None:
+        _PP_ACTIVE = (
+            "AND PP.is_active = 'Y' "
+            if run("SHOW COLUMNS FROM proposal_position LIKE 'is_active'")
+            else ""
+        )
+    return _PP_ACTIVE
+
+
 # The join every position query starts from. enrollment_id = 1 is the current enrollment,
 # the same filter every proposal_consituency read in ../../portal-frontend-code applies.
 POSITION_FROM = f"""

@@ -17,10 +17,15 @@ client = TestClient(app)
 
 # ZPTC Member — 671 positions, the post with the most proposed names in the live data, and
 # the only one whose locations span every parliament constituency in the state.
-ZPTC = dict(mainElectionTypeId=2, proposalElectionTypeId=1, proposalRoleId=3)
+ZPTC = dict(proposalRoleId=3)
 ZPTC_POSITIONS = 671
 
-# The 15 assemblies the caller in the brief scopes to, and two parliaments that cover most
+# Corporator. The one post whose rows span more than one election type — Municipal Ward,
+# Corporation Ward and a stray MPTC constituency — and the reason the API keys on the role
+# rather than on the (body, election type, role) triple it used to require.
+CORPORATOR_ROLE_ID = 5
+
+# The 15 assemblies the caller in the brief scopes to, and two parliaments covering most
 # of them.
 ASSEMBLY_IDS = "111,127,133,134,135,136,137,140,141,354,355,356,357,358,368"
 PARLIAMENT_IDS = "464,508"
@@ -186,6 +191,55 @@ def test_lookups_are_the_reference_tables():
     assemblies = get("/api/dashboard2/assemblies", parliamentId=PARLIAMENT_IDS)
     assert assemblies and all(
         str(a["parliament_id"]) in PARLIAMENT_IDS.split(",") for a in assemblies
+    )
+
+
+def test_a_post_spanning_election_types_is_one_card():
+    """Corporator is role 5 under three different election types, and must count as one.
+
+    This is the regression the dashboard tree had: keying a post on (body, election type,
+    role) split Corporator into a Municipal Ward row and a Corporation Ward row, so the two
+    dashboards drew different trees. Asking by role alone has to return their sum.
+    """
+    summary = get("/api/dashboard2/positionSummary")["positions"]
+    parts = [p for p in summary if p["proposal_role_id"] == CORPORATOR_ROLE_ID]
+    assert len(parts) > 1, "Corporator no longer spans election types — check the seed data"
+    expected = sum(p["total_locations"] for p in parts)
+
+    whole = get("/api/dashboard2/geoBreakdown", proposalRoleId=CORPORATOR_ROLE_ID)
+    assert sum(r["total_locations"] for r in whole["parliaments"]) == expected
+    assert sum(r["total_locations"] for r in whole["assemblies"]) == expected
+
+    reserved = get("/api/dashboard2/reservationSummary", proposalRoleId=CORPORATOR_ROLE_ID)
+    assert reserved["totals"]["total_locations"] == expected
+
+    # And narrowing by election type still carves out exactly one of the parts.
+    one = parts[0]
+    narrowed = get(
+        "/api/dashboard2/reservationSummary",
+        proposalRoleId=CORPORATOR_ROLE_ID,
+        proposalElectionTypeId=one["proposal_election_type_id"],
+    )
+    assert narrowed["totals"]["total_locations"] == one["total_locations"]
+
+
+def test_the_tree_claims_every_position():
+    """The fifteen cards' role ids must cover every proposal_role that holds positions.
+
+    A role appearing here that the tree does not claim is a post the dashboards would draw
+    in their "Other" group — visible, but outside the agreed layout. Keep this in step with
+    Frontend/src/leap/electionTree.js.
+    """
+    claimed = {4, 6, 7, 3, 12, 13, 8, 9, 5, 10, 11, 1, 2}
+    live = {p["proposal_role_id"] for p in get("/api/dashboard2/positionSummary")["positions"]}
+    assert live <= claimed, f"unclaimed roles: {sorted(live - claimed)}"
+
+
+def test_role_id_is_required_and_validated():
+    assert client.get("/api/dashboard2/reservationSummary").status_code == 422
+    assert (
+        client.get("/api/dashboard2/reservationSummary", params={"proposalRoleId": "abc"}).status_code
+        == 400
     )
 
 
