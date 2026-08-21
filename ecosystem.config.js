@@ -4,8 +4,8 @@ module.exports = {
   apps: [
     {
       // One process: gateway.py mounts every project backend
-      // (/portal-frontend-code, /admin-dashboard, /portal-dashboard and
-      // /pc-meetings) in a single ASGI app.
+      // (/portal-frontend-code, /portal-frontend-code-2, /admin-dashboard,
+      // /portal-dashboard and /pc-meetings) in a single ASGI app.
       name: 'psa-backend',
       script: 'python3',
       args: '-m uvicorn gateway:app --host 0.0.0.0 --port 6644',

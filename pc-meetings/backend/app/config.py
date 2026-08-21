@@ -37,6 +37,10 @@ MEETING_TYPE_ID = int(os.getenv("MEETING_TYPE_ID", "1"))
 # `booth.publication_id` scopes booths to the live electoral roll publication.
 UNIT_PUBLICATION_ID = int(os.getenv("UNIT_PUBLICATION_ID", "42"))
 
+# `leader.party_id` scopes the Programmes roster to this party — `leader` holds
+# a handful of rows for other parties (872 is ~71.2k of ~71.3k total).
+LEADER_PARTY_ID = int(os.getenv("LEADER_PARTY_ID", "872"))
+
 # One invitee list can run to six figures of rows; the table cannot render that
 # and the browser should not download it.
 MAX_PAGE_SIZE = int(os.getenv("MAX_PAGE_SIZE", "3000"))

@@ -4,6 +4,7 @@ Each project's backend is imported unchanged from its own sub-directory and
 mounted under a prefix named after the project:
 
     /portal-frontend-code/...   portal-frontend-code/Backend         (FastAPI)
+    /portal-frontend-code-2/... portal-frontend-code-2/Backend       (FastAPI)
     /admin-dashboard/...        admin-dashboard/Backend              (FastAPI)
     /portal-dashboard/...       portal-dashboard/Backend             (FastAPI)
     /pc-meetings/...            pc-meetings/backend                  (FastAPI)
@@ -138,6 +139,13 @@ def _load_flat_backend(alias: str, dir_name: str) -> FastAPI:
         sys.path.remove(str(backend))
 
 
+# Dashboard 2. Flat like the two below, and unauthenticated by design: it has no
+# middleware to preserve, but mounting keeps it consistent with the rest and gives it
+# its own CORS rules.
+def _load_dashboard2() -> FastAPI:
+    return _load_flat_backend("dashboard2_backend_main", "portal-frontend-code-2")
+
+
 def _load_admin() -> FastAPI:
     return _load_flat_backend("admin_backend_main", "admin-dashboard")
 
@@ -171,6 +179,7 @@ def _load_pc_meetings() -> FastAPI:
 # after its own .env, so it snapshots its own credentials.
 PROJECTS = [
     ("Portal (Local Body Elections)", "/portal-frontend-code", _load_portal),
+    ("Portal Dashboard 2 (Local Body Elections)", "/portal-frontend-code-2", _load_dashboard2),
     ("Admin Dashboard", "/admin-dashboard", _load_admin),
     ("Portal Dashboard", "/portal-dashboard", _load_portal_dashboard),
     ("PC Meetings", "/pc-meetings", _load_pc_meetings),

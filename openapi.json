@@ -915,6 +915,771 @@
         ]
       }
     },
+    "/portal-frontend-code-2/api/dashboard2/mainElectionTypes": {
+      "get": {
+        "tags": [
+          "Portal Dashboard 2 (Local Body Elections) - dashboard2-lookups"
+        ],
+        "summary": "[Portal Dashboard 2 (Local Body Elections)] Main Election Types",
+        "description": "The five body groups Dashboard 2 splits its table into.",
+        "operationId": "Portal_Dashboard_2_Local_Body_Elections__main_election_types_api_dashboard2_mainElectionTypes_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-frontend-code-2/api/dashboard2/electionTypes": {
+      "get": {
+        "tags": [
+          "Portal Dashboard 2 (Local Body Elections) - dashboard2-lookups"
+        ],
+        "summary": "[Portal Dashboard 2 (Local Body Elections)] Election Types",
+        "description": "Every proposal_election_type, active or not, each carrying the body it belongs to.\n\nInactive types are included rather than filtered: GMC Ward is is_active 'N' and has no\nmain_election_type_id, and a caller that hides it silently will not notice when a live\nposition turns up under it.",
+        "operationId": "Portal_Dashboard_2_Local_Body_Elections__election_types_api_dashboard2_electionTypes_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-frontend-code-2/api/dashboard2/roles": {
+      "get": {
+        "tags": [
+          "Portal Dashboard 2 (Local Body Elections) - dashboard2-lookups"
+        ],
+        "summary": "[Portal Dashboard 2 (Local Body Elections)] Roles",
+        "operationId": "Portal_Dashboard_2_Local_Body_Elections__roles_api_dashboard2_roles_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-frontend-code-2/api/dashboard2/statuses": {
+      "get": {
+        "tags": [
+          "Portal Dashboard 2 (Local Body Elections) - dashboard2-lookups"
+        ],
+        "summary": "[Portal Dashboard 2 (Local Body Elections)] Statuses",
+        "description": "proposal_status: 1 Proposed, 2 Confirmed. Shortlisted was dropped from the table and\nConfirmed moved down from 3 to 2 with it, so any id 3 anywhere is stale.",
+        "operationId": "Portal_Dashboard_2_Local_Body_Elections__statuses_api_dashboard2_statuses_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-frontend-code-2/api/dashboard2/reservations": {
+      "get": {
+        "tags": [
+          "Portal Dashboard 2 (Local Body Elections) - dashboard2-lookups"
+        ],
+        "summary": "[Portal Dashboard 2 (Local Body Elections)] Reservations",
+        "operationId": "Portal_Dashboard_2_Local_Body_Elections__reservations_api_dashboard2_reservations_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-frontend-code-2/api/dashboard2/parliaments": {
+      "get": {
+        "tags": [
+          "Portal Dashboard 2 (Local Body Elections) - dashboard2-lookups"
+        ],
+        "summary": "[Portal Dashboard 2 (Local Body Elections)] Parliaments",
+        "description": "The level-4 picklist \u2014 parliament constituencies in the state.",
+        "operationId": "Portal_Dashboard_2_Local_Body_Elections__parliaments_api_dashboard2_parliaments_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-frontend-code-2/api/dashboard2/assemblies": {
+      "get": {
+        "tags": [
+          "Portal Dashboard 2 (Local Body Elections) - dashboard2-lookups"
+        ],
+        "summary": "[Portal Dashboard 2 (Local Body Elections)] Assemblies",
+        "description": "The level-5 picklist \u2014 assembly constituencies, optionally under given parliaments.",
+        "operationId": "Portal_Dashboard_2_Local_Body_Elections__assemblies_api_dashboard2_assemblies_get",
+        "parameters": [
+          {
+            "name": "parliamentId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Narrow to the assemblies under these parliament constituencies. Repeat the parameter or send one comma-separated string.",
+              "title": "Parliamentid"
+            },
+            "description": "Narrow to the assemblies under these parliament constituencies. Repeat the parameter or send one comma-separated string."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Dashboard_2_Local_Body_Elections__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-frontend-code-2/api/dashboard2/positionSummary": {
+      "get": {
+        "tags": [
+          "Portal Dashboard 2 (Local Body Elections) - dashboard2"
+        ],
+        "summary": "[Portal Dashboard 2 (Local Body Elections)] Position Summary",
+        "description": "Dashboard 2's main table \u2014 every post in every body, with its counters.\n\nOne row per (main_election_type, proposal_election_type, proposal_role). That triple is\nthe post's identity: role 5 (Corporator) serves both Municipal Ward and Corporation\nWard, so grouping on the role alone would merge two of the screen's rows into one.",
+        "operationId": "Portal_Dashboard_2_Local_Body_Elections__position_summary_api_dashboard2_positionSummary_get",
+        "parameters": [
+          {
+            "name": "userLocationLevelId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "5 = Assembly, 4 = Parliament, omitted/null = whole state.",
+              "title": "Userlocationlevelid"
+            },
+            "description": "5 = Assembly, 4 = Parliament, omitted/null = whole state."
+          },
+          {
+            "name": "userLocationLevelValuesStr",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Location ids for the level above. Send as an array (?userLocationLevelValuesStr=111&userLocationLevelValuesStr=127) or as one comma-separated string (?userLocationLevelValuesStr=111,127). Ignored when userLocationLevelId is null.",
+              "title": "Userlocationlevelvaluesstr"
+            },
+            "description": "Location ids for the level above. Send as an array (?userLocationLevelValuesStr=111&userLocationLevelValuesStr=127) or as one comma-separated string (?userLocationLevelValuesStr=111,127). Ignored when userLocationLevelId is null."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Dashboard_2_Local_Body_Elections__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-frontend-code-2/api/dashboard2/pipeline": {
+      "get": {
+        "tags": [
+          "Portal Dashboard 2 (Local Body Elections) - dashboard2"
+        ],
+        "summary": "[Portal Dashboard 2 (Local Body Elections)] Pipeline",
+        "description": "The six progress bars across the top of Dashboard 2.\n\nEach step is a ratio of the step before it \u2014 proposals out of locations, confirmations\nout of proposals, and so on \u2014 which is exactly how the screen draws them. Served off the\nsame aggregate as /positionSummary so a bar can never disagree with the table under it.",
+        "operationId": "Portal_Dashboard_2_Local_Body_Elections__pipeline_api_dashboard2_pipeline_get",
+        "parameters": [
+          {
+            "name": "userLocationLevelId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "5 = Assembly, 4 = Parliament, omitted/null = whole state.",
+              "title": "Userlocationlevelid"
+            },
+            "description": "5 = Assembly, 4 = Parliament, omitted/null = whole state."
+          },
+          {
+            "name": "userLocationLevelValuesStr",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Location ids for the level above. Send as an array (?userLocationLevelValuesStr=111&userLocationLevelValuesStr=127) or as one comma-separated string (?userLocationLevelValuesStr=111,127). Ignored when userLocationLevelId is null.",
+              "title": "Userlocationlevelvaluesstr"
+            },
+            "description": "Location ids for the level above. Send as an array (?userLocationLevelValuesStr=111&userLocationLevelValuesStr=127) or as one comma-separated string (?userLocationLevelValuesStr=111,127). Ignored when userLocationLevelId is null."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Dashboard_2_Local_Body_Elections__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-frontend-code-2/api/dashboard2/geoBreakdown": {
+      "get": {
+        "tags": [
+          "Portal Dashboard 2 (Local Body Elections) - dashboard2"
+        ],
+        "summary": "[Portal Dashboard 2 (Local Body Elections)] Geo Breakdown",
+        "description": "One post's counters split by parliament, and again by assembly.\n\nBoth halves add back up to that post's row in /positionSummary. That holds because every\nposition is attributed to exactly one assembly \u2014 see queries.ASSEMBLY_EXPR, which also\ndocuments the corner that rule cuts for whole-body and district positions.",
+        "operationId": "Portal_Dashboard_2_Local_Body_Elections__geo_breakdown_api_dashboard2_geoBreakdown_get",
+        "parameters": [
+          {
+            "name": "proposalElectionTypeId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Proposalelectiontypeid"
+            }
+          },
+          {
+            "name": "proposalRoleId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Proposalroleid"
+            }
+          },
+          {
+            "name": "mainElectionTypeId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Mainelectiontypeid"
+            }
+          },
+          {
+            "name": "parliamentId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Narrow the assembly half to one parliament constituency.",
+              "title": "Parliamentid"
+            },
+            "description": "Narrow the assembly half to one parliament constituency."
+          },
+          {
+            "name": "userLocationLevelId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "5 = Assembly, 4 = Parliament, omitted/null = whole state.",
+              "title": "Userlocationlevelid"
+            },
+            "description": "5 = Assembly, 4 = Parliament, omitted/null = whole state."
+          },
+          {
+            "name": "userLocationLevelValuesStr",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Location ids for the level above. Send as an array (?userLocationLevelValuesStr=111&userLocationLevelValuesStr=127) or as one comma-separated string (?userLocationLevelValuesStr=111,127). Ignored when userLocationLevelId is null.",
+              "title": "Userlocationlevelvaluesstr"
+            },
+            "description": "Location ids for the level above. Send as an array (?userLocationLevelValuesStr=111&userLocationLevelValuesStr=127) or as one comma-separated string (?userLocationLevelValuesStr=111,127). Ignored when userLocationLevelId is null."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Dashboard_2_Local_Body_Elections__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-frontend-code-2/api/dashboard2/reservationSummary": {
+      "get": {
+        "tags": [
+          "Portal Dashboard 2 (Local Body Elections) - dashboard2"
+        ],
+        "summary": "[Portal Dashboard 2 (Local Body Elections)] Reservation Summary",
+        "description": "Dashboard 2's reservation cards for one post.\n\nEvery reservation actually configured on that post's positions, plus a bucket for the\nones with none \u2014 reported as reservation_type null, never folded into GENERAL, since\n\"unreserved\" and \"not configured yet\" are different states to fix.",
+        "operationId": "Portal_Dashboard_2_Local_Body_Elections__reservation_summary_api_dashboard2_reservationSummary_get",
+        "parameters": [
+          {
+            "name": "proposalElectionTypeId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Proposalelectiontypeid"
+            }
+          },
+          {
+            "name": "proposalRoleId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Proposalroleid"
+            }
+          },
+          {
+            "name": "mainElectionTypeId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Mainelectiontypeid"
+            }
+          },
+          {
+            "name": "userLocationLevelId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "5 = Assembly, 4 = Parliament, omitted/null = whole state.",
+              "title": "Userlocationlevelid"
+            },
+            "description": "5 = Assembly, 4 = Parliament, omitted/null = whole state."
+          },
+          {
+            "name": "userLocationLevelValuesStr",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Location ids for the level above. Send as an array (?userLocationLevelValuesStr=111&userLocationLevelValuesStr=127) or as one comma-separated string (?userLocationLevelValuesStr=111,127). Ignored when userLocationLevelId is null.",
+              "title": "Userlocationlevelvaluesstr"
+            },
+            "description": "Location ids for the level above. Send as an array (?userLocationLevelValuesStr=111&userLocationLevelValuesStr=127) or as one comma-separated string (?userLocationLevelValuesStr=111,127). Ignored when userLocationLevelId is null."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Dashboard_2_Local_Body_Elections__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-frontend-code-2/api/dashboard2/locations": {
+      "get": {
+        "tags": [
+          "Portal Dashboard 2 (Local Body Elections) - dashboard2"
+        ],
+        "summary": "[Portal Dashboard 2 (Local Body Elections)] Locations",
+        "description": "One post's locations \u2014 Dashboard 2's location list.\n\nA location is one proposal_position row, so its reservation, its names and its stage all\ncome off the same row the counters were summed from.\n\nPaged, because a single post can be 12,451 locations (MPTC state-wide). The names are\nfetched for the page as a whole (one IN-list query), never per row: the comparison table\nneeds them all at once and a per-row lookup would be one query per location.",
+        "operationId": "Portal_Dashboard_2_Local_Body_Elections__locations_api_dashboard2_locations_get",
+        "parameters": [
+          {
+            "name": "proposalElectionTypeId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Proposalelectiontypeid"
+            }
+          },
+          {
+            "name": "proposalRoleId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Proposalroleid"
+            }
+          },
+          {
+            "name": "mainElectionTypeId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Mainelectiontypeid"
+            }
+          },
+          {
+            "name": "stage",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "maximum": 6,
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Keep only locations at this stage (0-6).",
+              "title": "Stage"
+            },
+            "description": "Keep only locations at this stage (0-6)."
+          },
+          {
+            "name": "reservationType",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A reservation_type, or the literal 'NONE' for unreserved.",
+              "title": "Reservationtype"
+            },
+            "description": "A reservation_type, or the literal 'NONE' for unreserved."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
+              "default": 200,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "includeCandidates",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Attach each location's proposed names. One extra query per page.",
+              "default": true,
+              "title": "Includecandidates"
+            },
+            "description": "Attach each location's proposed names. One extra query per page."
+          },
+          {
+            "name": "userLocationLevelId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "5 = Assembly, 4 = Parliament, omitted/null = whole state.",
+              "title": "Userlocationlevelid"
+            },
+            "description": "5 = Assembly, 4 = Parliament, omitted/null = whole state."
+          },
+          {
+            "name": "userLocationLevelValuesStr",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Location ids for the level above. Send as an array (?userLocationLevelValuesStr=111&userLocationLevelValuesStr=127) or as one comma-separated string (?userLocationLevelValuesStr=111,127). Ignored when userLocationLevelId is null.",
+              "title": "Userlocationlevelvaluesstr"
+            },
+            "description": "Location ids for the level above. Send as an array (?userLocationLevelValuesStr=111&userLocationLevelValuesStr=127) or as one comma-separated string (?userLocationLevelValuesStr=111,127). Ignored when userLocationLevelId is null."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Dashboard_2_Local_Body_Elections__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/portal-frontend-code-2/api/dashboard2/locationCandidates": {
+      "get": {
+        "tags": [
+          "Portal Dashboard 2 (Local Body Elections) - dashboard2"
+        ],
+        "summary": "[Portal Dashboard 2 (Local Body Elections)] Location Candidates",
+        "description": "The names proposed for one or more locations \u2014 Dashboard 2's comparison table.\n\nWhether a name fits the location's reservation is NOT decided here. That rule lives in\n../../portal-frontend-code/Backend/main.py's eligibility_flag(), which is the same code\nthe write path enforces; a second copy here would drift from it. This endpoint returns\nthe candidate's caste category and gender, and /locations returns the position's\nreservation, which is everything the comparison needs to show the fit.",
+        "operationId": "Portal_Dashboard_2_Local_Body_Elections__location_candidates_api_dashboard2_locationCandidates_get",
+        "parameters": [
+          {
+            "name": "proposalPositionId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "One or more proposal_position_id. Repeat the parameter or send them comma-separated.",
+              "title": "Proposalpositionid"
+            },
+            "description": "One or more proposal_position_id. Repeat the parameter or send them comma-separated."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portal_Dashboard_2_Local_Body_Elections__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/admin-dashboard/api/members": {
       "get": {
         "tags": [
@@ -3362,6 +4127,52 @@
         }
       }
     },
+    "/pc-meetings/api/meetings/schedules/pc-never-updated": {
+      "get": {
+        "tags": [
+          "PC Meetings - meetings"
+        ],
+        "summary": "[PC Meetings] Pc Never Updated Schedules",
+        "description": "Roster locations with no `meeting_conducted_status` row at all for a\nmeeting \u2014 the same figure PC Status' `notUpdated` sums per meeting,\ndrilled down to rows. The PC-side twin of `/schedules/not-scheduled`:\nsame roster (`_level_roster` is shared with it), just covered-ids read\noff `meeting_conducted_status.location_id` instead of\n`meeting_schedules.entity_id`.",
+        "operationId": "PC_Meetings__pc_never_updated_schedules_api_meetings_schedules_pc_never_updated_get",
+        "parameters": [
+          {
+            "name": "meeting_ids",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Comma-separated meeting ids",
+              "title": "Meeting Ids"
+            },
+            "description": "Comma-separated meeting ids"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Pc Never Updated Schedules Api Meetings Schedules Pc Never Updated Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PC_Meetings__HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/pc-meetings/api/meetings/schedules/pc-completed": {
       "get": {
         "tags": [
@@ -3552,7 +4363,7 @@
           "PC Meetings - meetings"
         ],
         "summary": "[PC Meetings] Schedule Summary",
-        "description": "The App & PC summary panel's real row detail \u2014 one row per schedule.\n\n`meeting_schedules.entity_id` and `meeting_conducted_status.location_id`\nare the same id: confirmed 1:1 for meeting 22's 2,860 rows, so the join\ncarries no fan-out. A location with no matching row there reads as not\ncompleted, the same as an explicit NULL \u2014 there is nothing to mark it\ncomplete with either way. `meeting_remark` carries at most one row per\n`meeting_conducted_status_id` \u2014 the save endpoint updates in place rather\nthan versioning \u2014 so the join to it is 1:1 too.\n\n`entity_id` is a `unit.id` at Unit level, an `assembly.id` at AC level, a\n`parliament.id` at PC level, and a `mandal.id` or `town.id` at Mandal\nlevel \u2014 the id spaces overlap (assembly 207 and unit 207 both exist), so\nwhich table it resolves against has to follow the meeting's own level\nrather than \"whichever join isn't null\". Blindly joining `unit` for every\nrow, as this used to, silently matched AC-, PC- and Mandal-level rows\nagainst an unrelated unit and showed its code as the location \u2014 a mandal\ncommittee is its own thing, not the `unit` rows nested inside it, so\n`mandal`/`town` (the two don't collide with each other) resolve it now.\n\n`entity_id`/`assembly_id` are `int`/`bigint`; every table above (plus\n`meeting_conducted_status.location_id`) keys off a `varchar` id. Left as\n`x.id = s.entity_id`, MySQL casts the varchar side to compare, which\ncan't use that column's index \u2014 a full table scan per schedule row, for\nevery one of these joins. The cast goes on the `meeting_schedules` side\ninstead (same fix as the invitee/attendance join elsewhere in this file)\nso each target table's own primary key still does the work.\n\nThe panel doesn't send a per-row `assembly` \u2014 the caller already knows\nthe meeting's level (it's the tier the user picked to get here), so the\nUI reads that off its own `level` prop rather than a value repeated\nidentically on every row. At AC level it does still send `parliament`\n(which parliament each assembly sits in) and at Mandal and Unit level\n`assembly` (which AC each mandal/town/division/unit sits in) \u2014 all\ngenuinely vary row to row. The Mandal one comes straight off\n`s.assembly_id`, the schedule's own column, not off `entity_id` \u2014\n`entity_id`'s id space collides with `assembly.id` too (mandal 141 and\nassembly 141 both exist), so it can't be trusted to resolve the AC on its\nown the way it resolves the unit. `unit` carries no `assembly_id` of its\nown that's safe to trust either, so the Unit one goes through `booth` \u2014\nthe same (assembly, unit) pairing `/api/units` already counts from,\nscoped to the live roll (`config.UNIT_PUBLICATION_ID`). That map is\nfetched once as its own query and applied in Python rather than joined\nper row: `booth` has no index MySQL can use against a `DISTINCT`\nsubquery, so joining it turned into a nested scan of ~46k booth rows for\nevery one of a meeting's schedule rows and never finished.\n\nAt Mandal level, `location` prefers the enrolled committee roster behind\n`/api/committees/mandal-town-division` (the \"Mandal / Town / Division\nLevel \u00b7 Total\" card) over `mandal`/`town`: those two mytdp tables only\ncover 84% of this tier's schedule rows, while the roster \u2014 filtered the\nsame way the Total card is (`tdp_committee_enrollment_id = 4`, levels\n5/7/9, `tdp_basic_committee_id = 1`) \u2014 covers 99.75% and, within that\nfiltered set, never has two different committees sharing one location id\n(checked directly; the *unfiltered* `tehsil`/`local_election_body`\ntables do collide, which is why this endpoint doesn't query them\nunfiltered). `mandal`/`town` remain the fallback for the handful of rows\nthe roster doesn't cover.",
+        "description": "The App & PC summary panel's real row detail \u2014 one row per schedule.\n\n`meeting_schedules.entity_id` and `meeting_conducted_status.location_id`\nare the same id: confirmed 1:1 for meeting 22's 2,860 rows, so the join\ncarries no fan-out. A location with no matching row there reads as not\ncompleted, the same as an explicit NULL \u2014 there is nothing to mark it\ncomplete with either way. `meeting_remark` carries at most one row per\n`meeting_conducted_status_id` \u2014 the save endpoint updates in place rather\nthan versioning \u2014 so the join to it is 1:1 too.\n\n`entity_id` is a `unit.id` at Unit level, an `assembly.id` at AC level, a\n`parliament.id` at PC level, and a `mandal.id` or `town.id` at Mandal\nlevel \u2014 the id spaces overlap (assembly 207 and unit 207 both exist), so\nwhich table it resolves against has to follow the meeting's own level\nrather than \"whichever join isn't null\". Blindly joining `unit` for every\nrow, as this used to, silently matched AC-, PC- and Mandal-level rows\nagainst an unrelated unit and showed its code as the location \u2014 a mandal\ncommittee is its own thing, not the `unit` rows nested inside it, so\n`mandal`/`town` (the two don't collide with each other) resolve it now.\n\n`entity_id`/`assembly_id` are `int`/`bigint`; every table above (plus\n`meeting_conducted_status.location_id`) keys off a `varchar` id. Left as\n`x.id = s.entity_id`, MySQL casts the varchar side to compare, which\ncan't use that column's index \u2014 a full table scan per schedule row, for\nevery one of these joins. The cast goes on the `meeting_schedules` side\ninstead (same fix as the invitee/attendance join elsewhere in this file)\nso each target table's own primary key still does the work.\n\nThe panel doesn't send a per-row `assembly`/`parliament` for the tier the\ncaller already knows it's looking at \u2014 the meeting's own level is the\ntier the user picked to get here, so a PC-level row carries neither (it\nIS a parliament) and an AC-level row carries no `assembly` (it IS one) \u2014\nonly `parliament`, which parliament that assembly sits in. Mandal and\nUnit rows carry both, since neither is redundant with the row's own\n`location`. The Mandal ones come off `s.assembly_id`, the schedule's own\ncolumn, not off `entity_id` \u2014 `entity_id`'s id space collides with\n`assembly.id` too (mandal 141 and assembly 141 both exist), so it can't\nbe trusted to resolve the AC on its own the way it resolves the unit.\n`unit` carries no `assembly_id` of its own that's safe to trust either,\nso the Unit ones go through `booth` via `_unit_lookup()` \u2014 the same\n(assembly, unit) pairing `/api/units` already counts from, scoped to the\nlive roll (`config.UNIT_PUBLICATION_ID`), plus that assembly's own\n`parliament_id`. That map is fetched once as its own query and applied\nin Python rather than joined per row: `booth` has no index MySQL can use\nagainst a `DISTINCT` subquery, so joining it turned into a nested scan of\n~46k booth rows for every one of a meeting's schedule rows and never\nfinished.\n\nAt Mandal level, `location` prefers the enrolled committee roster behind\n`/api/committees/mandal-town-division` (the \"Mandal / Town / Division\nLevel \u00b7 Total\" card) over `mandal`/`town`: those two mytdp tables only\ncover 84% of this tier's schedule rows, while the roster \u2014 filtered the\nsame way the Total card is (`tdp_committee_enrollment_id = 4`, levels\n5/7/9, `tdp_basic_committee_id = 1`) \u2014 covers 99.75% and, within that\nfiltered set, never has two different committees sharing one location id\n(checked directly; the *unfiltered* `tehsil`/`local_election_body`\ntables do collide, which is why this endpoint doesn't query them\nunfiltered). `mandal`/`town` remain the fallback for the handful of rows\nthe roster doesn't cover.",
         "operationId": "PC_Meetings__schedule_summary_api_meetings__meeting_id__schedule_summary_get",
         "parameters": [
           {
@@ -4533,6 +5344,52 @@
         ],
         "title": "ValidationError"
       },
+      "Portal_Dashboard_2_Local_Body_Elections__HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/Portal_Dashboard_2_Local_Body_Elections__ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "Portal_Dashboard_2_Local_Body_Elections__ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
       "Admin_Dashboard__ActiveUpdate": {
         "properties": {
           "is_active": {
@@ -5243,6 +6100,14 @@
     {
       "name": "Portal (Local Body Elections) - API",
       "description": "Served from /portal-frontend-code"
+    },
+    {
+      "name": "Portal Dashboard 2 (Local Body Elections) - dashboard2",
+      "description": "Served from /portal-frontend-code-2"
+    },
+    {
+      "name": "Portal Dashboard 2 (Local Body Elections) - dashboard2-lookups",
+      "description": "Served from /portal-frontend-code-2"
     },
     {
       "name": "Admin Dashboard - auth",

@@ -23,6 +23,11 @@ def capture(rows):
         calls.append((sql, args))
         return rows
 
+    # pp_active() probes the schema through main.query on first use, which would land in
+    # `calls` as a phantom first query and shift every index below. Pinning it to "" is
+    # also what these assertions describe: the SQL without the proposal_position.is_active
+    # filter, which is what the column's absence produces.
+    main._PP_ACTIVE = ""
     main.query = fake_query
     return calls
 
@@ -53,7 +58,15 @@ def check_s19_scoped():
     main.get_proposal_positions_with_candidates(FakeRequest())
     sql, args = calls[0]
     assert "WHERE AC.constituency_id IN (%s, %s)" in sql, sql
-    assert args == (main.PROPOSED_STATUS_ID, 181, 182), args
+    # Two status ids in the SELECT before the access list: the COALESCE default and the
+    # value each of the two per-status counts compares against.
+    assert args == (
+        main.PROPOSED_STATUS_ID,
+        main.PROPOSED_STATUS_ID,
+        main.CONFIRMED_STATUS_ID,
+        181,
+        182,
+    ), args
     assert sql.count("%s") == len(args), sql
     # The filter has to sit between the joins and the grouping, or MySQL rejects it.
     assert sql.index("WHERE AC.constituency_id") < sql.index("GROUP BY"), sql
