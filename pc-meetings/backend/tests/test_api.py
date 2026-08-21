@@ -46,7 +46,7 @@ def test_meeting_split_and_funnel():
         {"id": 15, "title": "t", "meeting_date": None, "level_name": "AC"},
         {"invitees": 100, "attendees": 40, "attendanceRecords": 250,
          "units": 10, "unitsCompleted": 4, "resolutions": 3, "feedbackTaken": 15,
-         "pcTotal": 9, "pcConducted": 3},
+         "pcTotal": 9, "pcConducted": 3, "pcNull": 6},
         pc_not_updated=7,
     )
     assert (m["attendees"], m["absent"]) == (40, 60)
@@ -56,15 +56,26 @@ def test_meeting_split_and_funnel():
     assert m["units"]["started"] == m["units"]["completed"] == 4
     assert m["units"]["notConducted"] == 6
     assert (m["feedbackPending"], m["completion"]) == (45, 25)
-    # NULL and 'N' rows both read as not conducted; conducted + notConducted
-    # must always foot back to the total *row* count — `pcTotal` counts only
-    # locations that already have a `meeting_conducted_status` row.
+    # `notConducted` is `IS NULL` alone; an explicit 'N' counts as neither
+    # conducted nor not-conducted, so this only feet back to `pcTotal` when
+    # (as here) every non-conducted row is NULL and none is 'N'.
     assert (m["pc"]["conducted"], m["pc"]["notConducted"]) == (3, 6)
     assert m["pc"]["conducted"] + m["pc"]["notConducted"] == m["pc"]["total"]
     # `notUpdated` is the caller-supplied roster-absence figure, not derived
     # from `agg` at all — a location with no conducted-status row is outside
     # `pcTotal` the same way a never-scheduled one is outside `units.total`.
     assert m["pc"]["notUpdated"] == 7
+
+
+def test_meeting_pc_not_conducted_excludes_explicit_n():
+    """An explicit 'N' row is neither conducted nor not-conducted under the
+    IS-NULL definition — `pcTotal` can exceed `conducted + notConducted`."""
+    m = adapt.meeting(
+        {"id": 16, "title": "t", "meeting_date": None, "level_name": "AC"},
+        {"pcTotal": 9, "pcConducted": 3, "pcNull": 4},
+    )
+    assert (m["pc"]["conducted"], m["pc"]["notConducted"]) == (3, 4)
+    assert m["pc"]["conducted"] + m["pc"]["notConducted"] < m["pc"]["total"]
 
 
 def test_meeting_includes_pc_remarks_count():
@@ -320,7 +331,7 @@ def test_pc_completed_schedules_matches_the_pc_conducted_sum():
 
 @live
 def test_pc_not_completed_schedules_matches_the_pc_notconducted_sum():
-    """`is_conducted IS NULL OR 'N'` must foot to the combined summed figure."""
+    """`is_conducted IS NULL` must foot to the summed `pc.notConducted` figure."""
     data = client.get("/api/meetings/schedules/pc-not-completed?meeting_ids=13,22,26").json()
     meetings = {
         m["id"]: m for m in client.get("/api/meetings?from=2026-01-01&to=2026-12-31").json()

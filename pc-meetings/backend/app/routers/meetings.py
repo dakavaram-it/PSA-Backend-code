@@ -51,24 +51,22 @@ _FEEDBACK = f"""
 """
 
 
-# The six light counts, as one statement. Each still scans only its own table
-# and groups the same way it did as six separate queries; they are stitched with
+# The four light counts, as one statement. Each still scans only its own table
+# and groups the same way it did as four separate queries; they are stitched with
 # UNION ALL because the round trip, not the scan, is what a dashboard load pays
-# for — ~200ms each from outside the VPC, six of them for figures that take
+# for — ~200ms each from outside the VPC, four of them for figures that take
 # milliseconds to count. `src` says which count a row carries and the three
 # value columns are read positionally through `_LIGHT_KEYS`.
+#
+# `meeting_schedules` and `meeting_conducted_status` are *not* here — see
+# `_schedule_stats`/`_conducted_stats` below, which count them roster-scoped
+# instead of with a flat `meeting_id`-only `GROUP BY`.
 _LIGHT_AGGREGATES = """
 SELECT 'attendance' AS src, meeting_id AS id, COUNT(*) AS a, 0 AS b, 0 AS c
   FROM meeting_attendance WHERE meeting_id IN ({marks}) GROUP BY meeting_id
 UNION ALL
-SELECT 'schedules', meeting_id, COUNT(*), SUM(status IN (1, 2)), 0
-  FROM meeting_schedules WHERE meeting_id IN ({marks}) GROUP BY meeting_id
-UNION ALL
 SELECT 'resolutions', meeting_id, COUNT(*), 0, 0
   FROM meeting_resolutions WHERE meeting_id IN ({marks}) GROUP BY meeting_id
-UNION ALL
-SELECT 'pc', meeting_id, COUNT(*), SUM(is_conducted = 'Y'), SUM(is_conducted IS NULL)
-  FROM meeting_conducted_status WHERE meeting_id IN ({marks}) GROUP BY meeting_id
 UNION ALL
 SELECT 'pcRemarks', meeting_id, COUNT(*), 0, 0
   FROM meeting_remark
@@ -79,25 +77,25 @@ SELECT 'feedback', program_id, COUNT(*), 0, 0 {feedback} AND program_id IN ({mar
  GROUP BY program_id
 """
 
-# Which figure each `src` row carries, in column order. `pcTotal`/`pcConducted`/
-# `pcNull` keep their old meanings: 'Y' alone counts as conducted, and NULL is
-# kept apart from an explicit 'N' because "App & PC Not updated" means NULL.
+# Which figure each `src` row carries, in column order.
 _LIGHT_KEYS = {
     "attendance": ("attendanceRecords",),
-    "schedules": ("units", "unitsCompleted"),
     "resolutions": ("resolutions",),
-    "pc": ("pcTotal", "pcConducted", "pcNull"),
     "pcRemarks": ("pcRemarks",),
     "feedback": ("feedbackTaken",),
 }
 
 
-def _aggregates(ids: list[str]) -> dict[str, dict[str, Any]]:
+def _aggregates(meeting_rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """Every counted figure for these meetings, keyed by meeting id.
 
-    Two queries: the invitee list against attendance, which is the only slow one
-    (half a million invitee rows, seconds), and everything else in one pass.
+    Three passes: the invitee list against attendance (the only slow one —
+    half a million invitee rows, seconds), the light flat counts in one pass,
+    and the roster-scoped schedule/PC-status counts (`_schedule_stats`,
+    `_conducted_stats`), which need each meeting's level to pick the right
+    roster join and so can't ride in the flat `_LIGHT_AGGREGATES` statement.
     """
+    ids = [str(r["id"]) for r in meeting_rows]
     if not ids:
         return {}
     marks = db.placeholders(ids)
@@ -115,11 +113,16 @@ def _aggregates(ids: list[str]) -> dict[str, dict[str, Any]]:
         agg[str(r["meeting_id"])].update(invitees=r["invitees"], attendees=r["attendees"])
 
     sql = _LIGHT_AGGREGATES.format(marks=marks, feedback=_FEEDBACK)
-    for r in db.rows(sql, tuple(ids) * 6):
+    for r in db.rows(sql, tuple(ids) * 4):
         slot = agg.get(str(r["id"]))
         if slot is None:
             continue
         slot.update(zip(_LIGHT_KEYS[r["src"]], (r["a"], r["b"], r["c"])))
+
+    for mid, stats in _schedule_stats(meeting_rows).items():
+        agg.setdefault(mid, {}).update(stats)
+    for mid, stats in _conducted_stats(meeting_rows).items():
+        agg.setdefault(mid, {}).update(stats)
 
     return agg
 
@@ -172,6 +175,69 @@ def _matched_counts(by_level: dict[str, list[str]]) -> dict[str, dict[str, int]]
     out: dict[str, dict[str, int]] = {level: {} for level in by_level}
     for r in db.rows(" UNION ALL ".join(parts), tuple(args)):
         out[r["level"]][str(r["id"])] = r["matched"]
+    return out
+
+
+def _schedule_stats(meeting_rows: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+    """Per meeting: `units` and `unitsCompleted`, scoped to the current
+    roster — the App-side twin of `_matched_counts`, with the status split
+    added so it can feed `agg` directly.
+
+    Scoped for the same reason `_not_scheduled_counts` scopes its own gap
+    figure: a `meeting_schedules` row whose `entity_id` has since fallen out
+    of the roster (an old-publication unit, a mandal no longer enrolled)
+    can't be Conducted or Not Conducted on this card either — it isn't part
+    of "this level's roster" any more, on either side of the split. Without
+    this, Conducted + Not Conducted + Not Updated could run over the roster
+    size by however many such rows a meeting happened to carry.
+    """
+    by_level: dict[str, list[str]] = {}
+    for r in meeting_rows:
+        by_level.setdefault(adapt.level_code(r["level_name"]), []).append(str(r["id"]))
+
+    out: dict[str, dict[str, int]] = {}
+
+    joined = {lvl: ids for lvl, ids in by_level.items() if lvl in _ROSTER_JOINS}
+    if joined:
+        parts, args = [], []
+        for level, ids in joined.items():
+            join, needs_publication = _ROSTER_JOINS[level]
+            # `COUNT(DISTINCT entity_id)`, not `COUNT(*)`: at Unit level the
+            # join fans out through `booth` (many booths per unit, all
+            # sharing a publication_id), so a raw row count/SUM would
+            # multiply a unit's single schedule row by however many booths
+            # it has — the same reason `_matched_counts` counts DISTINCT.
+            parts.append(f"""
+                SELECT s.meeting_id AS id, COUNT(DISTINCT s.entity_id) AS matched,
+                       COUNT(DISTINCT CASE WHEN s.status IN (1, 2) THEN s.entity_id END) AS completed
+                  FROM meeting_schedules s
+                  {join}
+                 WHERE s.meeting_id IN ({db.placeholders(ids)})
+                 GROUP BY s.meeting_id""")
+            if needs_publication:
+                args.append(config.UNIT_PUBLICATION_ID)
+            args.extend(ids)
+        for r in db.rows(" UNION ALL ".join(parts), tuple(args)):
+            out[str(r["id"])] = {"units": r["matched"], "unitsCompleted": r["completed"] or 0}
+
+    mandal_ids = by_level.get("Mandal", [])
+    if mandal_ids:
+        marks = db.placeholders(mandal_ids)
+        roster_ids = {str(r["location_id"]) for r in db.rows(_COMMITTEE_LOCATIONS) if r["location_id"] is not None}
+        tally: dict[str, list[int]] = {}
+        for r in db.rows(
+            f"SELECT meeting_id, entity_id, status FROM meeting_schedules WHERE meeting_id IN ({marks})",
+            tuple(mandal_ids),
+        ):
+            if str(r["entity_id"]) not in roster_ids:
+                continue
+            slot = tally.setdefault(str(r["meeting_id"]), [0, 0])
+            slot[0] += 1
+            if r["status"] in (1, 2):
+                slot[1] += 1
+        for mid, (matched, completed) in tally.items():
+            out[mid] = {"units": matched, "unitsCompleted": completed}
+
     return out
 
 
@@ -270,6 +336,64 @@ def _pc_matched_counts(by_level: dict[str, list[str]]) -> dict[str, dict[str, in
     return out
 
 
+def _conducted_stats(meeting_rows: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+    """Per meeting: `pcTotal`, `pcConducted` and `pcNull`, scoped to the
+    current roster — the PC-side twin of `_schedule_stats`, same reasoning:
+    a `meeting_conducted_status` row for a location that's since fallen out
+    of the roster can't be Conducted or Not conducted on this card either.
+    """
+    by_level: dict[str, list[str]] = {}
+    for r in meeting_rows:
+        by_level.setdefault(adapt.level_code(r["level_name"]), []).append(str(r["id"]))
+
+    out: dict[str, dict[str, int]] = {}
+
+    joined = {lvl: ids for lvl, ids in by_level.items() if lvl in _PC_ROSTER_JOINS}
+    if joined:
+        parts, args = [], []
+        for level, ids in joined.items():
+            join, needs_publication = _PC_ROSTER_JOINS[level]
+            # `COUNT(DISTINCT location_id)`, not `COUNT(*)` — same booth
+            # fan-out risk as `_schedule_stats` at Unit level.
+            parts.append(f"""
+                SELECT mcs.meeting_id AS id, COUNT(DISTINCT mcs.location_id) AS matched,
+                       COUNT(DISTINCT CASE WHEN mcs.is_conducted = 'Y' THEN mcs.location_id END) AS conducted,
+                       COUNT(DISTINCT CASE WHEN mcs.is_conducted IS NULL THEN mcs.location_id END) AS is_null
+                  FROM meeting_conducted_status mcs
+                  {join}
+                 WHERE mcs.meeting_id IN ({db.placeholders(ids)})
+                 GROUP BY mcs.meeting_id""")
+            if needs_publication:
+                args.append(config.UNIT_PUBLICATION_ID)
+            args.extend(ids)
+        for r in db.rows(" UNION ALL ".join(parts), tuple(args)):
+            out[str(r["id"])] = {
+                "pcTotal": r["matched"], "pcConducted": r["conducted"] or 0, "pcNull": r["is_null"] or 0
+            }
+
+    mandal_ids = by_level.get("Mandal", [])
+    if mandal_ids:
+        marks = db.placeholders(mandal_ids)
+        roster_ids = {str(r["location_id"]) for r in db.rows(_COMMITTEE_LOCATIONS) if r["location_id"] is not None}
+        tally: dict[str, list[int]] = {}
+        for r in db.rows(
+            f"SELECT meeting_id, location_id, is_conducted FROM meeting_conducted_status WHERE meeting_id IN ({marks})",
+            tuple(mandal_ids),
+        ):
+            if str(r["location_id"]) not in roster_ids:
+                continue
+            slot = tally.setdefault(str(r["meeting_id"]), [0, 0, 0])
+            slot[0] += 1
+            if r["is_conducted"] == "Y":
+                slot[1] += 1
+            if r["is_conducted"] is None:
+                slot[2] += 1
+        for mid, (matched, conducted, is_null) in tally.items():
+            out[mid] = {"pcTotal": matched, "pcConducted": conducted, "pcNull": is_null}
+
+    return out
+
+
 def _pc_not_updated_counts(meeting_rows: list[dict[str, Any]]) -> dict[str, int]:
     """Per meeting: how many of its level's roster locations have no
     `meeting_conducted_status` row at all — the PC-side twin of
@@ -336,7 +460,7 @@ def list_meetings(
     # None of the three groups needs another's answer and each is seconds of
     # database work, so they overlap rather than queue.
     agg, not_scheduled, pc_not_updated = db.parallel(
-        lambda: _aggregates([str(r["id"]) for r in rows]),
+        lambda: _aggregates(rows),
         lambda: _not_scheduled_counts(rows),
         lambda: _pc_not_updated_counts(rows),
     )
@@ -370,6 +494,35 @@ def _unit_lookup() -> dict[str, dict[str, str]]:
                  LEFT JOIN parliament PC ON PC.id = AC.parliament_id""",
             (config.UNIT_PUBLICATION_ID,),
         )
+    }
+
+
+def _mandal_assembly_lookup(ids: list[str]) -> dict[tuple[str, str], dict[str, str]]:
+    """Per (meeting_id, mandal/town id): the assembly and parliament the
+    App-side `meeting_schedules` row for that same location recorded in its
+    own `assembly_id` — the only place that mapping lives, since
+    `meeting_conducted_status` carries no `assembly_id` column of its own
+    (see `_conducted_status_rows`, which was leaving Mandal assembly/
+    parliament blank for exactly that reason). Fetched as its own lookup and
+    applied in Python, the same way `_unit_lookup` and `mandal_locations` are
+    here, rather than joined inline — a location rescheduled more than once
+    for a meeting must not multiply the PC rows it's applied to."""
+    if not ids:
+        return {}
+    marks = db.placeholders(ids)
+    rows = db.rows(
+        f"""SELECT s.meeting_id, s.entity_id, ma.name AS assembly_name, map.parliament_name AS parliament_name
+              FROM meeting_schedules s
+              LEFT JOIN assembly ma ON ma.id = CAST(s.assembly_id AS CHAR)
+              LEFT JOIN parliament map ON map.id = ma.parliament_id
+             WHERE s.meeting_id IN ({marks}) AND s.assembly_id IS NOT NULL""",
+        tuple(ids),
+    )
+    return {
+        (str(r["meeting_id"]), str(r["entity_id"])): {
+            "assembly": r["assembly_name"] or "", "parliament": r["parliament_name"] or ""
+        }
+        for r in rows
     }
 
 
@@ -426,6 +579,22 @@ def _schedule_rows(meeting_ids: str, condition: str) -> dict[str, Any]:
     if any(adapt.level_code(r["level_name"]) == "Unit" for r in rows):
         unit_lookup = _unit_lookup()
 
+    def _on_roster(r: dict[str, Any]) -> bool:
+        level = adapt.level_code(r["level_name"])
+        if level == "PC":
+            return r["entity_parliament_name"] is not None
+        if level == "AC":
+            return r["assembly_name"] is not None
+        if level == "Mandal":
+            return str(r["entity_id"]) in mandal_locations
+        return str(r["entity_id"]) in unit_lookup
+
+    # Same roster scoping as `_schedule_stats` (which this must foot to): a
+    # row for a location that's since fallen off the current roster — an
+    # old-publication unit, a mandal no longer enrolled — isn't part of any
+    # App-side figure any more, this list included.
+    rows = [r for r in rows if _on_roster(r)]
+
     def _fields(r: dict[str, Any]) -> dict[str, str]:
         level = adapt.level_code(r["level_name"])
         if level == "PC":
@@ -479,12 +648,11 @@ def _conducted_status_rows(meeting_ids: str, condition: str) -> dict[str, Any]:
     way `meeting_schedules.entity_id` does.
 
     Mandal is the exception: unlike `meeting_schedules`, this table carries
-    no `assembly_id` column of its own, so there is no row-level path to a
-    mandal's assembly/parliament here — only the enrolled committee roster's
-    own location name (`_COMMITTEE_LOCATIONS`), the same source
-    `_schedule_rows` prefers for its Mandal `location`. Assembly/parliament
-    are left blank there rather than guessed, same reasoning as
-    `_level_roster`'s Mandal branch.
+    no `assembly_id` column of its own, so its assembly/parliament are
+    backfilled from `_mandal_assembly_lookup` — the same meeting's own
+    `meeting_schedules` row for that location, which does carry one. Location
+    itself still comes off the enrolled committee roster (`_COMMITTEE_LOCATIONS`),
+    the same source `_schedule_rows` prefers for its Mandal `location`.
     """
     ids = _ids(meeting_ids)
     if not ids:
@@ -522,6 +690,25 @@ def _conducted_status_rows(meeting_ids: str, condition: str) -> dict[str, Any]:
     if any(adapt.level_code(r["level_name"]) == "Unit" for r in rows):
         unit_lookup = _unit_lookup()
 
+    mandal_assembly: dict[tuple[str, str], dict[str, str]] = {}
+    if any(adapt.level_code(r["level_name"]) == "Mandal" for r in rows):
+        mandal_assembly = _mandal_assembly_lookup(ids)
+
+    def _on_roster(r: dict[str, Any]) -> bool:
+        level = adapt.level_code(r["level_name"])
+        if level == "PC":
+            return r["entity_parliament_name"] is not None
+        if level == "AC":
+            return r["assembly_name"] is not None
+        if level == "Mandal":
+            return str(r["location_id"]) in mandal_locations
+        return str(r["location_id"]) in unit_lookup
+
+    # Same roster scoping as `_conducted_stats` (which this must foot to): a
+    # row for a location that's since fallen off the current roster isn't
+    # part of any PC-side figure any more, this list included.
+    rows = [r for r in rows if _on_roster(r)]
+
     def _fields(r: dict[str, Any]) -> dict[str, str]:
         level = adapt.level_code(r["level_name"])
         if level == "PC":
@@ -535,9 +722,10 @@ def _conducted_status_rows(meeting_ids: str, condition: str) -> dict[str, Any]:
                 "assembly": "", "parliament": r["assembly_parliament_name"] or "",
             }
         if level == "Mandal":
+            info = mandal_assembly.get((str(r["meeting_id"]), str(r["location_id"])), {})
             return {
                 "location": mandal_locations.get(str(r["location_id"])) or r["location_id"] or "",
-                "assembly": "", "parliament": "",
+                "assembly": info.get("assembly", ""), "parliament": info.get("parliament", ""),
             }
         info = unit_lookup.get(str(r["location_id"]), {})
         return {
@@ -737,9 +925,12 @@ def pc_completed_schedules(
 def pc_not_completed_schedules(
     meeting_ids: str = Query(..., description="Comma-separated meeting ids"),
 ) -> dict[str, Any]:
-    """`is_conducted IS NULL OR 'N'` — PC Status' Not completed, the combined
-    figure. Broader than `/pc-not-updated`, which is NULL alone."""
-    return _conducted_status_rows(meeting_ids, "is_conducted IS NULL OR is_conducted = 'N'")
+    """`is_conducted IS NULL` — PC Status' Not conducted, the same rows
+    `adapt.meeting`'s `pc.notConducted` sums per meeting (its `pcNull`
+    aggregate). An explicit 'N' is its own rare state and is not counted
+    here — same condition `/pc-not-updated` uses; kept as two routes since
+    the frontend already calls this one for that stat's drill-down."""
+    return _conducted_status_rows(meeting_ids, "is_conducted IS NULL")
 
 
 @router.get("/schedules/pc-not-updated")
@@ -991,7 +1182,7 @@ def get_meeting(meeting_id: str) -> dict[str, Any]:
     if row is None:
         raise HTTPException(status_code=404, detail="Unknown meeting")
     agg_all, not_scheduled_all, pc_not_updated_all = db.parallel(
-        lambda: _aggregates([str(row["id"])]),
+        lambda: _aggregates([row]),
         lambda: _not_scheduled_counts([row]),
         lambda: _pc_not_updated_counts([row]),
     )
