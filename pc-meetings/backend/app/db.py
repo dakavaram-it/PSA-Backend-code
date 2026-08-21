@@ -133,6 +133,15 @@ def execute(sql: str, args: tuple = ()) -> int:
         return cur.rowcount
 
 
+def insert(sql: str, args: tuple = ()) -> int:
+    """Like `execute`, but for an INSERT whose caller needs the new row's
+    auto_increment id back (`cur.lastrowid` is only meaningful on the same
+    cursor that ran the INSERT, so this can't be built out of `execute`)."""
+    with borrow(ping=True) as c, c.cursor() as cur:
+        cur.execute(sql, args)
+        return cur.lastrowid
+
+
 def parallel(*fns: Callable[[], Any]) -> list[Any]:
     """Run independent read groups concurrently, each borrowing its own connection.
 
