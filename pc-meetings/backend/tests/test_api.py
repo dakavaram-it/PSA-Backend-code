@@ -5,6 +5,10 @@ still runs on a laptop with no VPN. Nothing here writes — the remark tests use
 the paths that refuse before touching `feedback_comment` or `meeting_remark`.
 """
 
+import base64
+import time
+
+import jwt
 import pytest
 from fastapi.testclient import TestClient
 
@@ -12,7 +16,26 @@ from app import adapt, config, db
 from app.main import app
 from app.routers.programs import _leader_with_role_sql
 
-client = TestClient(app)
+
+def _state_token() -> str:
+    """A session for a user the portal has granted the whole state.
+
+    Every route is scoped to the caller's own assemblies now, so the assertions
+    below — which are about state-wide totals — need a caller the scope does not
+    narrow. A row in `user_state_access_info` is exactly that grant, and user 1
+    holds one. The token is minted here rather than fetched from the portal:
+    this service only ever verifies one, and the secret is the same on both
+    sides.
+    """
+    now = int(time.time())
+    return jwt.encode(
+        {"sub": "1", "iat": now, "exp": now + 600},
+        base64.b64decode(config.JWT_SECRET + "==="),
+        algorithm=config.JWT_ALGORITHM,
+    )
+
+
+client = TestClient(app, headers={"Authorization": "Bearer " + _state_token()})
 
 
 def db_up() -> bool:

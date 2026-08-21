@@ -33,6 +33,39 @@ def env(key):
     return value
 
 
+# Every endpoint here is a plain `def`, so FastAPI runs it in its threadpool and a
+# blocking driver holds a worker for as long as the statement takes. Without a deadline
+# that is unbounded: a query stuck behind a lock pinned its worker forever, and enough of
+# them left the whole API unresponsive — /me, which touches none of the affected tables,
+# stopped answering at all. Two deadlines, so a stall stays local to the request that hit
+# it:
+#   * lock_wait_timeout makes the *server* give up waiting for a metadata or row lock,
+#     which is the failure actually seen (a parked transaction on
+#     dakavara_pa.local_election_body froze every reader of it). Errors as 1205 rather
+#     than hanging, and leaves nothing running server-side.
+#   * read_timeout is the backstop for a statement that is genuinely slow rather than
+#     blocked. Generous, because getCadreScores' rating procedures run for seconds.
+_LIMITS = {
+    "connect_timeout": int(os.environ.get("DB_CONNECT_TIMEOUT", "10")),
+    "read_timeout": int(os.environ.get("DB_READ_TIMEOUT", "60")),
+    "write_timeout": int(os.environ.get("DB_WRITE_TIMEOUT", "30")),
+    "init_command": "SET SESSION lock_wait_timeout = "
+    + os.environ.get("DB_LOCK_WAIT_TIMEOUT", "10"),
+}
+
+# autocommit=True is required, not cosmetic (same rule as every other backend here —
+# see ../admin-dashboard/Backend/db.py). With it off, pymysql opens a REPEATABLE READ
+# transaction on the first SELECT and nothing ever commits it: _read() has no commit,
+# so a pooled connection goes back to the pool *idle in transaction*. Two consequences,
+# both observed in production:
+#   * it keeps serving that frozen snapshot for its whole life, so writes made elsewhere
+#     look like they never landed;
+#   * it holds a SHARED_READ metadata lock on every table it touched, for hours. Any DDL
+#     on one of those tables then queues for an exclusive MDL, and every later reader
+#     queues behind that — one parked connection stalls the whole database. A pile-up of
+#     131 queries on "Waiting for table metadata lock" against
+#     dakavara_pa.local_election_body (read here by getTownsInAConstituency and the
+#     dashboard) is what this fixes.
 DB = {
     "host": env("DB_HOST"),
     "port": int(env("DB_PORT")),
@@ -40,6 +73,8 @@ DB = {
     "password": env("DB_PASSWORD"),
     "database": env("DB_NAME"),
     "cursorclass": pymysql.cursors.DictCursor,
+    "autocommit": True,
+    **_LIMITS,
 }
 
 # Cadre performance scores live in a database owned by the ratings pipeline, on its own
@@ -55,6 +90,8 @@ if all(os.environ.get(k) for k in ("REPORT_RATINGS_DB_HOST", "REPORT_RATINGS_DB_
         "password": os.environ["REPORT_RATINGS_DB_PASSWORD"],
         "database": os.environ.get("REPORT_RATINGS_DB_NAME", "report_ratings"),
         "cursorclass": pymysql.cursors.DictCursor,
+        "autocommit": True,
+        **_LIMITS,
     }
 
 # Nomination PDFs (uploadNominationFile) go to this bucket. Optional like RATINGS_DB: with the key pair
@@ -120,6 +157,25 @@ def _checkout(config, pool):
         return pymysql.connect(**config), True
 
 
+# OperationalError covers both "this connection is gone" and "the server refused this
+# statement" (a lock wait that timed out, say). Only the first is worth another attempt:
+# retrying a 1205 just waits out lock_wait_timeout a second time and doubles how long a
+# blocked table holds a worker.
+_CONNECTION_LOST = {
+    0,  # pymysql's own "connection closed" paths
+    2006,  # MySQL server has gone away
+    2013,  # Lost connection to MySQL server during query
+    2055,  # Lost connection ... system error
+}
+
+
+def _connection_lost(exc):
+    if isinstance(exc, pymysql.err.InterfaceError):
+        return True
+    code = exc.args[0] if exc.args else None
+    return code in _CONNECTION_LOST
+
+
 def _read(config, pool, run):
     """Run a read on a pooled connection, retrying once on a fresh one.
 
@@ -130,7 +186,11 @@ def _read(config, pool, run):
     conn, is_new = _checkout(config, pool)
     try:
         result = run(conn)
-    except (pymysql.err.OperationalError, pymysql.err.InterfaceError):
+    except (pymysql.err.OperationalError, pymysql.err.InterfaceError) as exc:
+        if not _connection_lost(exc):
+            # Refused, not dropped (a lock wait that timed out): still a good connection.
+            _release(pool, conn)
+            raise
         _discard(conn)
         if is_new:
             raise
@@ -1525,13 +1585,39 @@ def identity_from_row(row):
     }
 
 
+# guard_response resolves an identity on *every* authenticated request, and building one
+# costs three sequential round trips (`user`, then scope_for's constituency/district
+# lookup, then the four-table entitlements join). From outside the VPC that is ~650ms of
+# the ~870ms a trivial endpoint like getUserAccessAssemblies took — the request spent
+# three quarters of its life re-deriving who the caller was.
+#
+# So it is memoised per user for a few seconds. The point of reading it fresh (see
+# identity_from_row) was that a changed entitlement or constituency lands on the next
+# request instead of the next login; a window this short keeps that, and turns a burst of
+# calls from one screen into one read instead of three per call.
+IDENTITY_TTL = int(os.environ.get("IDENTITY_CACHE_SECONDS", "30"))
+_IDENTITY_CACHE = {}
+
+
 def identity_for(user_id):
+    now = time.time()
+    hit = _IDENTITY_CACHE.get(user_id)
+    if hit and hit[0] > now:
+        return hit[1]
+    # Bounded without a sweep thread: drop whatever has aged out whenever the cache grows
+    # past a size a single portal instance has no business exceeding.
+    if len(_IDENTITY_CACHE) > 512:
+        for key in [k for k, v in _IDENTITY_CACHE.items() if v[0] <= now]:
+            _IDENTITY_CACHE.pop(key, None)
     rows = query(
         "SELECT user_id, username, firstname, lastname, user_type, access_type, "
         "access_value FROM `user` WHERE user_id = %s",
         (user_id,),
     )
-    return identity_from_row(rows[0]) if rows else None
+    identity = identity_from_row(rows[0]) if rows else None
+    if identity is not None:
+        _IDENTITY_CACHE[user_id] = (now + IDENTITY_TTL, identity)
+    return identity
 
 
 # Where this user sits, for the three ids the login response promises. Not read off

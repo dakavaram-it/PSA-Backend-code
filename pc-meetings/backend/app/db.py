@@ -45,6 +45,17 @@ _POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="pcm-db")
 # The connection is gone, rather than the query being wrong: worth one retry.
 _DEAD = (pymysql.err.OperationalError, pymysql.err.InterfaceError)
 
+# ...but OperationalError also covers statements the server refused on a live connection
+# — a lock wait that timed out, most of all. Retrying one of those only waits out
+# lock_wait_timeout a second time, so `rows` checks the code before trying again.
+_CONNECTION_LOST = {0, 2006, 2013, 2055}
+
+
+def _is_lost(exc: BaseException) -> bool:
+    if isinstance(exc, pymysql.err.InterfaceError):
+        return True
+    return bool(exc.args) and exc.args[0] in _CONNECTION_LOST
+
 
 def _connect() -> pymysql.connections.Connection:
     return pymysql.connect(
@@ -53,6 +64,11 @@ def _connect() -> pymysql.connections.Connection:
         connect_timeout=config.DB_TIMEOUT_SECONDS,
         read_timeout=config.DB_TIMEOUT_SECONDS,
         autocommit=True,
+        # A lock this connection cannot get is not worth DB_TIMEOUT_SECONDS of a worker:
+        # let the server give up, so a table someone else has parked a transaction on
+        # errors in seconds instead of stalling the read path (and, via `rows`' retry,
+        # stalling it twice).
+        init_command=f"SET SESSION lock_wait_timeout = {config.DB_LOCK_WAIT_SECONDS}",
     )
 
 
@@ -87,8 +103,13 @@ def borrow(ping: bool = False):
 
     try:
         yield c
-    except _DEAD:
-        _close(c)
+    except _DEAD as exc:
+        if _is_lost(exc):
+            _close(c)
+        else:
+            # Refused, not dropped (a lock wait that timed out): the connection is still
+            # good and belongs back in the pool, or a locked table would drain it.
+            _release(c)
         raise
     except Exception:
         # Not a connection failure (a SQL error, say). The connection is still
@@ -105,12 +126,12 @@ def rows(sql: str, args: tuple = ()) -> list[dict[str, Any]]:
             with borrow() as c, c.cursor() as cur:
                 cur.execute(sql, args)
                 return list(cur.fetchall())
-        except _DEAD:
+        except _DEAD as exc:
             # An idle connection RDS closed behind our back looks exactly like
             # this on first use. The dead one has already been dropped; run the
             # query once more on a fresh one, and let a second failure through —
             # that one is real and belongs to the caller.
-            if last:
+            if last or not _is_lost(exc):
                 raise
     raise AssertionError("unreachable")
 

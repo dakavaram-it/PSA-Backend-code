@@ -24,6 +24,12 @@ Calendar Meetings is the one programme `/leaders` does not read
 `leader_program_activity` for: it counts real committee-meeting attendance
 from `mytdp.meetings`/`meeting_invitee`/`meeting_attendance` instead — see
 `_is_calendar_meetings` and the branch in `program_leaders`.
+
+Every roster count and member list here is narrowed to the assemblies the caller
+was granted, through `leader.constituency_id` — the same id `mytdp.assembly.id`
+uses (see `access.py`). A role with no leader inside the caller's assemblies
+drops out of `/roles` and both summary cards entirely, rather than showing as a
+row of zeroes.
 """
 
 from __future__ import annotations
@@ -31,10 +37,12 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from .. import config, db
+from .. import access, config, db
+from ..access import Scope
+from ..auth import caller_scope
 
 router = APIRouter(prefix="/api/programs", tags=["programs"])
 
@@ -95,7 +103,7 @@ def _leader_with_role_sql() -> str:
     )"""
 
 
-def _active_role_ids() -> list[int]:
+def _active_role_ids(scope: Scope) -> list[int]:
     """Role ids with at least one active party leader, by the same effective
     role `_leader_with_role_sql` computes. `/role-summary` and
     `/activity-summary` each used to run that derived table a second time
@@ -106,7 +114,7 @@ def _active_role_ids() -> list[int]:
     reused as a plain `role_id IN (...)` list instead."""
     rows = db.rows(
         f"""SELECT DISTINCT role_id FROM {_leader_with_role_sql()} l
-             WHERE is_deleted = 'N' AND party_id = %s""",
+             WHERE is_deleted = 'N' AND party_id = %s AND {access.leader(scope)}""",
         (config.LEADER_PARTY_ID,),
     )
     return [int(r["role_id"]) for r in rows if r["role_id"] is not None]
@@ -132,7 +140,7 @@ async def list_programs(
 
 
 @router.get("/roles")
-def list_roles() -> list[dict[str, Any]]:
+def list_roles(scope: Scope = Depends(caller_scope)) -> list[dict[str, Any]]:
     """Every member designation a programme can be filtered by (Minister, MLA,
     MP, Mandal President, …).
 
@@ -149,7 +157,7 @@ def list_roles() -> list[dict[str, Any]]:
     already-populated tables, the same ones `/role-summary` and
     `/activity-summary` read.
     """
-    active_role_ids = _active_role_ids()
+    active_role_ids = _active_role_ids(scope)
     if not active_role_ids:
         return []
     id_list = ",".join(str(rid) for rid in active_role_ids)
@@ -184,6 +192,7 @@ def list_activities() -> list[dict[str, Any]]:
 def role_summary(
     year: int = Query(..., ge=2000, le=2100),
     month: int = Query(..., ge=1, le=12),
+    scope: Scope = Depends(caller_scope),
 ) -> list[dict[str, Any]]:
     """The first Programmes card: every role `/roles` lists — an active
     leader and a `program_role` mapping, same as there — its `leader` roster
@@ -196,7 +205,7 @@ def role_summary(
     Both are scoped to `config.LEADER_PARTY_ID`, same as `/leaders`.
     """
     month_id = _month_id(year, month)
-    active_role_ids = _active_role_ids()
+    active_role_ids = _active_role_ids(scope)
     if not active_role_ids:
         return []
     id_list = ",".join(str(rid) for rid in active_role_ids)
@@ -207,6 +216,7 @@ def role_summary(
                    SUM(l.is_deleted = 'N' AND u.leader_id IS NOT NULL) AS updated
               FROM {config.PARTY_TRACK_DB}.role r
               LEFT JOIN {_leader_with_role_sql()} l ON l.role_id = r.role_id AND l.party_id = %s
+                     AND {access.leader(scope)}
               LEFT JOIN (
                     SELECT DISTINCT leader_id FROM {config.PARTY_TRACK_DB}.leader_program_activity
                      WHERE month_id = %s AND (is_deleted IS NULL OR is_deleted = 'N')
@@ -239,6 +249,7 @@ def role_summary(
 def activity_summary(
     year: int = Query(..., ge=2000, le=2100),
     month: int = Query(..., ge=1, le=12),
+    scope: Scope = Depends(caller_scope),
 ) -> list[dict[str, Any]]:
     """The second Programmes card: one row per (role, programme) pairing
     `program_role` actually defines — not every role crossed with every
@@ -250,7 +261,7 @@ def activity_summary(
     card below can ask for one pairing's leaders without re-deriving ids
     from the display names."""
     month_id = _month_id(year, month)
-    active_role_ids = _active_role_ids()
+    active_role_ids = _active_role_ids(scope)
     if not active_role_ids:
         return []
     id_list = ",".join(str(rid) for rid in active_role_ids)
@@ -262,6 +273,7 @@ def activity_summary(
               JOIN {config.PARTY_TRACK_DB}.role r ON r.role_id = pr.role_id
               JOIN {config.PARTY_TRACK_DB}.program p ON p.program_id = pr.program_id
               LEFT JOIN {_leader_with_role_sql()} l ON l.role_id = pr.role_id AND l.party_id = %s
+                     AND {access.leader(scope)}
               LEFT JOIN (
                     SELECT DISTINCT leader_id, program_id FROM {config.PARTY_TRACK_DB}.leader_program_activity
                      WHERE month_id = %s AND (is_deleted IS NULL OR is_deleted = 'N')
@@ -294,6 +306,7 @@ def program_leaders(
     activity_id: int = Query(..., description="program_id, despite the name — matches activity-summary's field"),
     year: int = Query(..., ge=2000, le=2100),
     month: int = Query(..., ge=1, le=12),
+    scope: Scope = Depends(caller_scope),
 ) -> list[dict[str, Any]]:
     """The third Programmes card: every active leader in one role, with
     their `leader_program_activity` participation for one programme and
@@ -351,6 +364,7 @@ def program_leaders(
                           WHERE YEAR(meeting_date) = %s AND MONTH(meeting_date) = %s
                        )
                    AND l.role_id = %s AND l.is_deleted = 'N' AND l.party_id = %s
+                   AND {access.leader(scope)}
                  GROUP BY l.leader_id, l.leader_name, l.mobile_no, l.tdp_cadre_id,
                           r.role_name, a.name, p.parliament_name
                  ORDER BY l.leader_name
@@ -370,6 +384,7 @@ def program_leaders(
                          ON lpa.leader_id = l.leader_id AND lpa.program_id = %s AND lpa.month_id = %s
                         AND (lpa.is_deleted IS NULL OR lpa.is_deleted = 'N')
                  WHERE l.role_id = %s AND l.is_deleted = 'N' AND l.party_id = %s
+                   AND {access.leader(scope)}
                  ORDER BY l.leader_name
                  LIMIT %s""",
             (activity_id, month_id, role_id, config.LEADER_PARTY_ID, config.MAX_PAGE_SIZE),
@@ -391,9 +406,14 @@ def program_leaders(
     ]
 
 
-def _leader_cadre_id(leader_id: int) -> int | None:
-    return db.scalar(
-        f"SELECT tdp_cadre_id FROM {config.PARTY_TRACK_DB}.leader WHERE leader_id = %s",
+def _scoped_leader(leader_id: int, scope: Scope) -> dict[str, Any] | None:
+    """This leader's row, or None when they sit outside the caller's granted
+    assemblies — the gate every `/leaders/{leader_id}/…` route below goes
+    through, so a leader the caller was never shown reads as unknown rather
+    than as a refusal that confirms they exist."""
+    return db.one(
+        f"""SELECT l.tdp_cadre_id FROM {config.PARTY_TRACK_DB}.leader l
+             WHERE l.leader_id = %s AND {access.leader(scope)}""",
         (leader_id,),
     )
 
@@ -403,6 +423,7 @@ def program_leader_meetings(
     leader_id: int,
     year: int = Query(..., ge=2000, le=2100),
     month: int = Query(..., ge=1, le=12),
+    scope: Scope = Depends(caller_scope),
 ) -> list[dict[str, Any]]:
     """Calendar Meetings' Update modal: every real committee meeting this
     leader (`leader_id` is `party_track.leader.leader_id`, the same `mid`
@@ -416,9 +437,10 @@ def program_leader_meetings(
     Meetings screen, not here). See `save_leader_meeting_remarks` for the
     write side.
     """
-    cadre_id = _leader_cadre_id(leader_id)
-    if cadre_id is None:
+    leader = _scoped_leader(leader_id, scope)
+    if leader is None or leader["tdp_cadre_id"] is None:
         return []
+    cadre_id = leader["tdp_cadre_id"]
     rows = db.rows(
         f"""SELECT m.id AS meeting_id, m.title, ml.level_name, m.meeting_date,
                    (att.mid IS NOT NULL) AS attended,
@@ -456,7 +478,10 @@ class LeaderMeetingRemarksIn(BaseModel):
 
 @router.put("/leaders/{leader_id}/meetings/{meeting_id}/remarks")
 def save_leader_meeting_remarks(
-    leader_id: int, meeting_id: int, body: LeaderMeetingRemarksIn = Body(...)
+    leader_id: int,
+    meeting_id: int,
+    body: LeaderMeetingRemarksIn = Body(...),
+    scope: Scope = Depends(caller_scope),
 ) -> dict[str, Any]:
     """Calendar Meetings' own remarks capture, into `leader_meeting_attendance`
     rather than `mytdp.feedback_comment` — accepted regardless of whether the
@@ -468,9 +493,10 @@ def save_leader_meeting_remarks(
     than trusting the client to say so. `file_path` is left untouched here:
     there is no upload endpoint yet to have written one.
     """
-    cadre_id = _leader_cadre_id(leader_id)
-    if cadre_id is None:
+    leader = _scoped_leader(leader_id, scope)
+    if leader is None or leader["tdp_cadre_id"] is None:
         raise HTTPException(status_code=404, detail="Unknown leader")
+    cadre_id = leader["tdp_cadre_id"]
 
     invitee = db.one(
         """SELECT membership_id FROM meeting_invitee
@@ -547,6 +573,7 @@ def program_leader_log_entries(
     program_id: int = Query(...),
     year: int = Query(..., ge=2000, le=2100),
     month: int = Query(..., ge=1, le=12),
+    scope: Scope = Depends(caller_scope),
 ) -> list[dict[str, Any]]:
     """The Update modal for every programme other than Calendar Meetings: a
     leader's own hand-added date/remarks log for one programme/month, off
@@ -558,6 +585,8 @@ def program_leader_log_entries(
     written on save, so switching the Update modal between two programmes
     for the same leader never shows one programme's entries under another's.
     """
+    if _scoped_leader(leader_id, scope) is None:
+        return []
     program_name = _program_name(program_id)
     if program_name is None:
         return []
@@ -589,11 +618,17 @@ class LeaderLogEntryIn(BaseModel):
 
 
 @router.post("/leaders/{leader_id}/log-entries")
-def add_leader_log_entry(leader_id: int, body: LeaderLogEntryIn = Body(...)) -> dict[str, Any]:
+def add_leader_log_entry(
+    leader_id: int,
+    body: LeaderLogEntryIn = Body(...),
+    scope: Scope = Depends(caller_scope),
+) -> dict[str, Any]:
     """Adds one row to a leader's log for one programme. `file_path` is left
     unset here, same as `save_leader_meeting_remarks` above: there is no
     upload endpoint yet to have written one.
     """
+    if _scoped_leader(leader_id, scope) is None:
+        raise HTTPException(status_code=404, detail="Unknown leader")
     program_name = _program_name(body.programId)
     if program_name is None:
         raise HTTPException(status_code=404, detail="Unknown programme")
@@ -609,10 +644,14 @@ def add_leader_log_entry(leader_id: int, body: LeaderLogEntryIn = Body(...)) -> 
 
 
 @router.delete("/leaders/{leader_id}/log-entries/{entry_id}")
-def delete_leader_log_entry(leader_id: int, entry_id: int) -> dict[str, Any]:
+def delete_leader_log_entry(
+    leader_id: int, entry_id: int, scope: Scope = Depends(caller_scope)
+) -> dict[str, Any]:
     """Soft-deletes one log row — `is_deleted`, not a real DELETE, matching
     every other removal in this schema (`leader_meeting_attendance`
     included)."""
+    if _scoped_leader(leader_id, scope) is None:
+        raise HTTPException(status_code=404, detail="Entry not found")
     updated = db.execute(
         f"""UPDATE {config.PARTY_TRACK_DB}.leader_meetings
                SET is_deleted = 'Y', updated_time = NOW()

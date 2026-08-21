@@ -8,7 +8,9 @@ counts, which are seeded configuration and do not move on their own.
     cd Backend && python test_dashboard2.py       (or: pytest test_dashboard2.py)
 """
 import sys
+import time
 
+import jwt
 from fastapi.testclient import TestClient
 
 from main import app
@@ -241,6 +243,119 @@ def test_role_id_is_required_and_validated():
         client.get("/api/dashboard2/reservationSummary", params={"proposalRoleId": "abc"}).status_code
         == 400
     )
+
+
+# --- writes ----------------------------------------------------------------
+# These hit the live database. Every one of them restores what it changed in a finally, so
+# a run leaves proposal_candidate exactly as it found it. If a run is interrupted midway,
+# the candidate it borrowed may be left Confirmed — check the id the failure names.
+
+
+def _token(user_id=1):
+    """A portal session token, minted with the same secret /login signs with."""
+    from config import JWT_ALGORITHM, JWT_SECRET
+
+    now = int(time.time())
+    return jwt.encode({"sub": str(user_id), "iat": now, "exp": now + 600}, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def _auth(user_id=1):
+    return {"Authorization": "Bearer " + _token(user_id)}
+
+
+def _borrow_proposed_candidate():
+    """One live Proposed candidate to move around, and its original state."""
+    page = get("/api/dashboard2/locations", **ZPTC, stage=1, limit=5)
+    for loc in page["locations"]:
+        for c in loc["candidates"]:
+            if c["proposal_status_id"] == 1 and c["is_nominated"] != "Y":
+                return c["proposal_candidate_id"]
+    raise AssertionError("no Proposed candidate available to exercise the writes")
+
+
+def test_writes_reject_anonymous_and_bad_tokens():
+    body = {"proposal_candidate_id": 1}
+    assert client.post("/api/dashboard2/confirmCandidate", json=body).status_code == 401
+    assert client.post("/api/dashboard2/removeCandidate", json=body).status_code == 401
+    assert client.post("/api/dashboard2/markNominated", json=body).status_code == 401
+    assert client.post(
+        "/api/dashboard2/confirmCandidate", json=body, headers={"Authorization": "Bearer nonsense"}
+    ).status_code == 401
+    # A token signed with the wrong key must not be accepted.
+    forged = jwt.encode({"sub": "1", "exp": int(time.time()) + 600}, "wrong-secret", algorithm="HS512")
+    assert client.post(
+        "/api/dashboard2/confirmCandidate", json=body, headers={"Authorization": "Bearer " + forged}
+    ).status_code == 401
+
+
+def test_unknown_candidate_is_404_not_a_silent_no_op():
+    r = client.post("/api/dashboard2/confirmCandidate", json={"proposal_candidate_id": 99999999}, headers=_auth())
+    assert r.status_code == 404, r.text
+
+
+def test_confirm_then_nominate_then_restore():
+    """The stage ladder, driven end to end and put back exactly as it was."""
+    cid = _borrow_proposed_candidate()
+    try:
+        r = client.post("/api/dashboard2/confirmCandidate", json={"proposal_candidate_id": cid}, headers=_auth())
+        assert r.status_code == 200, r.text
+        assert _candidate_state(cid) == (2, "N")
+
+        # Nomination needs a confirmed candidate, and this one now is.
+        r = client.post("/api/dashboard2/markNominated", json={"proposal_candidate_id": cid}, headers=_auth())
+        assert r.status_code == 200, r.text
+        assert _candidate_state(cid) == (2, "Y")
+
+        # A second Confirmed on the same location is refused, not silently allowed.
+        sibling = _sibling_candidate(cid)
+        if sibling:
+            r = client.post(
+                "/api/dashboard2/confirmCandidate", json={"proposal_candidate_id": sibling}, headers=_auth()
+            )
+            assert r.status_code == 409, r.text
+    finally:
+        client.post(
+            "/api/dashboard2/markNominated",
+            json={"proposal_candidate_id": cid, "is_nominated": "N"},
+            headers=_auth(),
+        )
+        client.post(
+            "/api/dashboard2/confirmCandidate",
+            json={"proposal_candidate_id": cid, "proposal_status_id": 1},
+            headers=_auth(),
+        )
+    assert _candidate_state(cid) == (1, "N"), f"failed to restore proposal_candidate {cid}"
+
+
+def test_nomination_refused_before_confirmation():
+    cid = _borrow_proposed_candidate()
+    r = client.post("/api/dashboard2/markNominated", json={"proposal_candidate_id": cid}, headers=_auth())
+    assert r.status_code == 409, r.text
+    assert _candidate_state(cid) == (1, "N"), "a refused write must change nothing"
+
+
+def _candidate_state(cid):
+    from db import run
+
+    row = run(
+        "SELECT proposal_status_id, is_nominated FROM proposal_candidate "
+        "WHERE proposal_candidate_id = %s AND is_active = 'Y'",
+        (cid,),
+        one=True,
+    )
+    return (row["proposal_status_id"], row["is_nominated"])
+
+
+def _sibling_candidate(cid):
+    from db import run
+
+    rows = run(
+        "SELECT proposal_candidate_id FROM proposal_candidate WHERE is_active = 'Y' "
+        "AND proposal_position_id = (SELECT proposal_position_id FROM proposal_candidate "
+        "WHERE proposal_candidate_id = %s) AND proposal_candidate_id <> %s LIMIT 1",
+        (cid, cid),
+    )
+    return rows[0]["proposal_candidate_id"] if rows else None
 
 
 if __name__ == "__main__":

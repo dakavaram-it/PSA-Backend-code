@@ -2,5 +2,8 @@ fastapi==0.115.6
 uvicorn[standard]==0.34.0
 PyMySQL==1.2.0
 python-dotenv==1.0.1
+# Verifies the portal's session token (app/auth.py): same library and
+# algorithm as the side that signs it.
+PyJWT==2.10.1
 pytest==8.3.4
 httpx==0.28.1
