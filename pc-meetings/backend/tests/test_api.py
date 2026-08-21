@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from app import adapt, config, db
 from app.main import app
+from app.routers.programs import _leader_with_role_sql
 
 client = TestClient(app)
 
@@ -205,21 +206,26 @@ def test_remarks_categories_are_a_real_roster():
 
 @live
 def test_program_roles_are_a_real_roster():
-    """Unlike the rest of `/api/programs`, `party_track.role` is real and
-    already populated — a fixed roster for the filter, not period-scoped
-    data. Member designations, not `mytdp.role`'s committee-meeting tiers."""
+    """`/roles` narrows `party_track.role` to roles with both an active
+    leader and a `program_role` mapping — member designations, not
+    `mytdp.role`'s committee-meeting tiers, and not every row in `role`
+    qualifies (MLC has program_role rows but no leaders, so it drops out)."""
     data = client.get("/api/programs/roles").json()
-    assert data, "no rows in party_track.role"
+    assert data, "no rows matched leader + program_role"
     names = {r["name"] for r in data}
-    assert {"Minister", "MLA", "MP", "MLC", "Mandal President"} <= names
+    assert {"Minister", "MLA", "MP", "Mandal President"} <= names
+    assert "MLC" not in names
 
 
 @live
 def test_program_activities_are_a_real_roster():
+    """`/activities` reads `party_track.program` — the same table
+    `/activity-summary` joins through `program_role` — not `party_track.activity`,
+    a separate scoring system this feature does not use."""
     data = client.get("/api/programs/activities").json()
-    assert data, "no rows in party_track.activity"
+    assert data, "no rows in party_track.program"
     names = {r["name"] for r in data}
-    assert {"Membership Drive", "Pressmeets", "Perception"} <= names
+    assert {"Calendar Meeting", "Pedala Sevalo"} <= names
 
 
 @live
@@ -247,8 +253,15 @@ def test_role_summary_is_the_same_roster_regardless_of_month():
 
 @live
 def test_activity_summary_only_carries_real_program_role_pairings():
-    """One row per `program_role` pairing, not a full role x programme
-    cross-product — a role never appears for a programme it isn't linked to."""
+    """One row per `program_role` pairing for a role that actually has an
+    active leader, not a full role x programme cross-product — a role never
+    appears for a programme it isn't linked to, and a role nobody holds
+    (MLC has program_role rows but no leaders) never appears at all.
+
+    "Active leader" is checked against `_leader_with_role_sql`, not raw
+    `leader.role_id` — a Minister who is also an MLA (`leader_role` rows
+    `1,2`) must count as an active leader for both, and raw `role_id` alone
+    only sees the first."""
     data = client.get("/api/programs/activity-summary?year=2026&month=7").json()
     pairings = {(r["role"], r["activity"]) for r in data}
     linked = {
@@ -258,7 +271,12 @@ def test_activity_summary_only_carries_real_program_role_pairings():
                   FROM {config.PARTY_TRACK_DB}.program_role pr
                   JOIN {config.PARTY_TRACK_DB}.role r ON r.role_id = pr.role_id
                   JOIN {config.PARTY_TRACK_DB}.program p ON p.program_id = pr.program_id
-                 WHERE pr.is_deleted IS NULL OR pr.is_deleted = 'N'"""
+                 WHERE (pr.is_deleted IS NULL OR pr.is_deleted = 'N')
+                   AND EXISTS (
+                         SELECT 1 FROM {_leader_with_role_sql()} l
+                          WHERE l.role_id = pr.role_id AND l.is_deleted = 'N'
+                            AND l.party_id = {config.LEADER_PARTY_ID}
+                       )"""
         )
     }
     assert pairings == linked
@@ -267,13 +285,21 @@ def test_activity_summary_only_carries_real_program_role_pairings():
 @live
 def test_program_leaders_cover_the_whole_role_roster():
     """Every active leader in the role gets a row, even with zero
-    leader_program_activity rows recorded — 0/0, not left out."""
+    leader_program_activity rows recorded — 0/0, not left out.
+
+    The expected count is `_leader_with_role_sql`, not raw `leader.role_id`
+    — Minister happens to match either way today, but MLA would not (all
+    21 active Ministers are also MLAs in `leader_role`, so raw `role_id`
+    alone undercounts MLA by 21). Also scoped to `config.LEADER_PARTY_ID`,
+    same as the endpoint — `leader` holds a handful of role_id=1 rows for
+    other parties that `/leaders` never returns."""
     role = db.one(
         f"SELECT role_id FROM {config.PARTY_TRACK_DB}.role WHERE role_name = 'Minister'"
     )
     expected = db.scalar(
-        f"SELECT COUNT(*) FROM {config.PARTY_TRACK_DB}.leader WHERE role_id = %s AND is_deleted = 'N'",
-        (role["role_id"],),
+        f"""SELECT COUNT(*) FROM {_leader_with_role_sql()} l
+             WHERE l.role_id = %s AND l.is_deleted = 'N' AND l.party_id = %s""",
+        (role["role_id"], config.LEADER_PARTY_ID),
     )
     data = client.get(
         f"/api/programs/leaders?role_id={role['role_id']}&activity_id=1&year=2026&month=7"
