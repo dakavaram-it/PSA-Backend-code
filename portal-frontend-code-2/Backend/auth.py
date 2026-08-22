@@ -18,12 +18,21 @@
 # location this backend exposes. Per-assembly write permission would mean resolving the
 # token's user against user_state_access_info / user_constituency_access_info the way
 # ../../portal-frontend-code's user_access_assemblies() does; that is not wired here.
+import base64
+
 import jwt
 from fastapi import HTTPException, Request
 
 # Via config so the .env is loaded however this module is reached, the same way every
 # other setting in this backend resolves.
 from config import JWT_ALGORITHM, JWT_SECRET
+
+# The portal signs with the **base64-decoded** JWT_SECRET, not its characters — jjwt's
+# `signWith(alg, String)` contract, which ../../portal-frontend-code/Backend/main.py and
+# ../../pc-meetings/backend/app/auth.py both follow. Verifying against the raw 15-character
+# string is a different key, so every real portal token came back "Invalid session".
+# Padded because the secret is stored unpadded; b64decode wants a multiple of four.
+JWT_KEY = base64.b64decode(JWT_SECRET + "===")
 
 
 def bearer_token(request: Request):
@@ -43,7 +52,7 @@ def require_user(request: Request) -> int:
     if not token:
         raise HTTPException(401, "Sign in to make changes")
     try:
-        claims = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        claims = jwt.decode(token, JWT_KEY, algorithms=[JWT_ALGORITHM])
     except jwt.ExpiredSignatureError:
         raise HTTPException(401, "Session expired. Sign in again.")
     except jwt.InvalidTokenError:

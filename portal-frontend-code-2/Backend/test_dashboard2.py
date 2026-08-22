@@ -25,7 +25,6 @@ ZPTC_POSITIONS = 671
 # Corporator. The one post whose rows span more than one election type — Municipal Ward,
 # Corporation Ward and a stray MPTC constituency — and the reason the API keys on the role
 # rather than on the (body, election type, role) triple it used to require.
-CORPORATOR_ROLE_ID = 5
 
 # The 15 assemblies the caller in the brief scopes to, and two parliaments covering most
 # of them.
@@ -183,7 +182,7 @@ def test_lookups_are_the_reference_tables():
         "Proposed",
         "Confirmed",
     }
-    assert len(get("/api/dashboard2/roles")) == 13
+    assert len(get("/api/dashboard2/roles")) == 14
     assert len(get("/api/dashboard2/reservations")) == 8
     # Every active election type is claimed by a body; the two picklists must agree.
     bodies = {r["main_election_type_id"] for r in get("/api/dashboard2/mainElectionTypes")}
@@ -197,29 +196,35 @@ def test_lookups_are_the_reference_tables():
 
 
 def test_a_post_spanning_election_types_is_one_card():
-    """Corporator is role 5 under three different election types, and must count as one.
+    """A post is its role id, whatever election types its positions sit under.
 
     This is the regression the dashboard tree had: keying a post on (body, election type,
     role) split Corporator into a Municipal Ward row and a Corporation Ward row, so the two
     dashboards drew different trees. Asking by role alone has to return their sum.
+
+    The spanning role is taken from the data rather than hardcoded: role 14 Ward Councillor
+    was added after this test was written and took the municipal wards off role 5, so
+    Corporator no longer spans anything.
     """
     summary = get("/api/dashboard2/positionSummary")["positions"]
-    parts = [p for p in summary if p["proposal_role_id"] == CORPORATOR_ROLE_ID]
-    assert len(parts) > 1, "Corporator no longer spans election types — check the seed data"
+    parts_by_role = {}
+    for row in summary:
+        parts_by_role.setdefault(row["proposal_role_id"], []).append(row)
+    role_id, parts = max(parts_by_role.items(), key=lambda kv: len(kv[1]))
     expected = sum(p["total_locations"] for p in parts)
 
-    whole = get("/api/dashboard2/geoBreakdown", proposalRoleId=CORPORATOR_ROLE_ID)
+    whole = get("/api/dashboard2/geoBreakdown", proposalRoleId=role_id)
     assert sum(r["total_locations"] for r in whole["parliaments"]) == expected
     assert sum(r["total_locations"] for r in whole["assemblies"]) == expected
 
-    reserved = get("/api/dashboard2/reservationSummary", proposalRoleId=CORPORATOR_ROLE_ID)
+    reserved = get("/api/dashboard2/reservationSummary", proposalRoleId=role_id)
     assert reserved["totals"]["total_locations"] == expected
 
     # And narrowing by election type still carves out exactly one of the parts.
     one = parts[0]
     narrowed = get(
         "/api/dashboard2/reservationSummary",
-        proposalRoleId=CORPORATOR_ROLE_ID,
+        proposalRoleId=role_id,
         proposalElectionTypeId=one["proposal_election_type_id"],
     )
     assert narrowed["totals"]["total_locations"] == one["total_locations"]
@@ -232,7 +237,7 @@ def test_the_tree_claims_every_position():
     in their "Other" group — visible, but outside the agreed layout. Keep this in step with
     Frontend/src/leap/electionTree.js.
     """
-    claimed = {4, 6, 7, 3, 12, 13, 8, 9, 5, 10, 11, 1, 2}
+    claimed = {4, 6, 7, 3, 12, 13, 8, 9, 5, 14, 10, 11, 1, 2}
     live = {p["proposal_role_id"] for p in get("/api/dashboard2/positionSummary")["positions"]}
     assert live <= claimed, f"unclaimed roles: {sorted(live - claimed)}"
 
@@ -253,10 +258,11 @@ def test_role_id_is_required_and_validated():
 
 def _token(user_id=1):
     """A portal session token, minted with the same secret /login signs with."""
-    from config import JWT_ALGORITHM, JWT_SECRET
+    from auth import JWT_KEY
+    from config import JWT_ALGORITHM
 
     now = int(time.time())
-    return jwt.encode({"sub": str(user_id), "iat": now, "exp": now + 600}, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    return jwt.encode({"sub": str(user_id), "iat": now, "exp": now + 600}, JWT_KEY, algorithm=JWT_ALGORITHM)
 
 
 def _auth(user_id=1):
