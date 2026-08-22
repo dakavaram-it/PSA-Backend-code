@@ -72,6 +72,17 @@ PORTAL_DB = os.getenv("PORTAL_DB_NAME", "dakavara_pa")
 # within the window rather than at the next login.
 ACCESS_CACHE_SECONDS = int(os.getenv("ACCESS_CACHE_SECONDS", "30"))
 
+# --- File storage -----------------------------------------------------------
+# S3, same account/bucket the portal's own `uploadNominationFile` uses
+# (`portal-frontend-code/Backend/main.py`) — same env var names on purpose, so
+# the two services can share one `.env` entry for the credentials once they
+# are issued. `S3_ACCESS_KEY`/`S3_SECRET_KEY` are blank until then; see
+# `storage.py` for what runs with no client configured.
+S3_BUCKET = os.getenv("S3_BUCKET", "leader-reports")
+S3_REGION = os.getenv("S3_REGION", "us-east-1")
+S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY", "")
+S3_SECRET_KEY = os.getenv("S3_SECRET_KEY", "")
+
 # Vite dev server by default; set to the deployed frontend origin in production.
 CORS_ORIGINS = [
     o.strip()

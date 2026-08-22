@@ -7,3 +7,6 @@ python-dotenv==1.0.1
 PyJWT==2.10.1
 pytest==8.3.4
 httpx==0.28.1
+# Monthly-activity file uploads (app/storage.py) — same S3 account the
+# portal's own uploadNominationFile uses. Unpinned there too.
+boto3

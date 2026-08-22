@@ -354,9 +354,15 @@ def test_program_leaders_cover_the_whole_role_roster():
 def test_program_leaders_report_no_counts():
     """`participated`/`completed` came off `leader_program_activity.total`/
     `.completed`, which nothing writes — they are gone, not zero, so nothing
-    downstream can render a fabricated 0/0. `attended` belongs to Calendar
-    Meetings alone (program_id 2): it is a real `meeting_attendance` fact,
-    and no other programme has an invitee list to be absent from."""
+    downstream can render a fabricated 0/0.
+
+    `attended` is sent for two groups only, and means something different
+    for each: Calendar Meetings (program_id 2) — a real `meeting_attendance`
+    fact — and the three monthly-activity programmes (Pedala Sevalo,
+    program_id 1, here) — whether a `leader_program_activity` row has been
+    recorded for this leader/month, since those have no invitee list to be
+    absent from. A dated-log programme (Field Performance, program_id 10)
+    gets neither: it has no monthly slot and no invitee list."""
     role = db.one(
         f"SELECT role_id FROM {config.PARTY_TRACK_DB}.role WHERE role_name = 'Minister'"
     )
@@ -366,12 +372,17 @@ def test_program_leaders_report_no_counts():
     assert monthly, "no Ministers in the roster"
     for r in monthly:
         assert "participated" not in r and "completed" not in r
-        assert "attended" not in r
+        assert isinstance(r["attended"], bool)
 
     calendar = client.get(base + "&activity_id=2").json()
     for r in calendar:
         assert "participated" not in r and "completed" not in r
         assert isinstance(r["attended"], bool)
+
+    log = client.get(base + "&activity_id=10").json()
+    for r in log:
+        assert "participated" not in r and "completed" not in r
+        assert "attended" not in r
 
 
 # --- the three monthly-activity programmes ----------------------------------

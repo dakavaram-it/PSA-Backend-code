@@ -22,10 +22,12 @@ one thing in this service that writes `leader_program_activity` is
 Programmes page's own "Activity" column and filter are `program`, since
 `leader_program_activity.program_id` is what it actually joins against.
 
-`/leaders` reads neither of those: it is the roster of one role, and the
-only programme it reports a fact about is Calendar Meetings, whose
-`attended` comes from `mytdp.meeting_invitee`/`meeting_attendance` — see
-`_is_calendar_meetings` and the branch in `program_leaders`.
+`/leaders` reads neither of those for its `attended` fact: two groups of
+programmes report a real one, both off `mytdp`, not `party_track` —
+Calendar Meetings from `meeting_invitee`/`meeting_attendance`
+(`_is_calendar_meetings`), and the three monthly activities from
+`mytdp.program`/`program_attendance` (`_is_monthly_activity`,
+`_monthly_activity_mytdp_filter`) — see the branches in `program_leaders`.
 
 Every roster count and member list here is narrowed to the assemblies the caller
 was granted, through `leader.constituency_id` — the same id `mytdp.assembly.id`
@@ -37,16 +39,24 @@ Each programme's Update modal is backed by one of three tables, and which
 one is decided by the programme's name alone:
 
 * **Calendar Meeting** — `leader_meeting_attendance`, keyed by the real
-  `mytdp` meeting the leader was invited to (`program_leader_meetings`,
-  `save_leader_meeting_remarks`).
-* **Pedala Sevalo, Swatch Andhra, Pattadar Passbook** —
+  `mytdp` meeting the leader was invited to: remarks via
+  `save_leader_meeting_remarks`, a file via `upload_leader_meeting_file`
+  (S3, `app/storage.py` — the same account the monthly activities below
+  use), both read back through `program_leader_meetings`.
+* **Pedala Sevalo, Swatch Andhra, Pattadar Passbook** — remarks go to
   `leader_program_activity`, one row per leader/programme/month
   (`_MONTHLY_ACTIVITY_PROGRAMS`, `program_leader_monthly_activity`,
-  `save_leader_monthly_activity`). This is the same table the two summary
-  cards count Updated/Not updated from, so recording an update here is what
-  finally makes those figures move for these three.
+  `save_leader_monthly_activity`); this is the same table the two summary
+  cards count Updated/Not updated from, so recording a remark here is what
+  moves those figures for these three. **Attendance itself is not stored
+  there** — `party_track` has no invitee/attendance concept of its own for
+  these, so `/leaders`' `attended` for this trio reads real check-in data
+  out of `mytdp.program`/`program_attendance` instead (see above).
 * **everything else** — `leader_meetings`, a dated list the leader adds to
-  by hand (`program_leader_log_entries`, `add_leader_log_entry`).
+  by hand (`program_leader_log_entries`, `add_leader_log_entry`); a file
+  goes on afterwards, by the new row's own id
+  (`upload_leader_log_entry_file`), the same S3 account as the two groups
+  above.
 
 The three are fenced off `leader_meetings` rather than merely pointed
 elsewhere: the log-entry routes raise for them instead of writing a row no
@@ -55,13 +65,14 @@ reader would look at again.
 
 from __future__ import annotations
 
+import calendar
 import re
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 
-from .. import access, config, db
+from .. import access, config, db, storage
 from ..access import Scope
 from ..auth import caller_scope
 
@@ -108,6 +119,48 @@ def _is_calendar_meetings(program_name: str | None) -> bool:
 
 def _is_monthly_activity(program_name: str | None) -> bool:
     return _norm_program(program_name) in _MONTHLY_ACTIVITY_PROGRAMS
+
+
+def _month_bounds(year: int, month: int) -> tuple[str, str]:
+    """First and last calendar date of the month, as `YYYY-MM-DD` strings —
+    used to test a `mytdp.program` row's `[from_date, to_date]` span for
+    overlap with the requested month."""
+    last_day = calendar.monthrange(year, month)[1]
+    return f"{year:04d}-{month:02d}-01", f"{year:04d}-{month:02d}-{last_day:02d}"
+
+
+# `mytdp.program_type.code = 'Pedala Sevalo'` — the one of the three monthly
+# activities with a dedicated, reliable type (verified: all 13 `program` rows
+# under this id are the same recurring "పేదల సేవలో" event, one per month).
+_PEDALA_SEVALO_PROGRAM_TYPE_ID = "e0837147a-3eda-11f0-a697-c853090bd99"
+
+
+def _monthly_activity_mytdp_filter(program_name: str) -> tuple[str, tuple]:
+    """A boolean SQL fragment over an aliased `mp` row from `mytdp.program`
+    (plus its bound params) selecting the real event rows behind one of the
+    three monthly activities, for the real-attendance join in
+    `program_leaders`.
+
+    `mytdp.program_type` has no row at all for two of the three — Swatch
+    Andhra and Pattadar Passbook are filed under three different types
+    between them (Dharna, Event, Other) with nothing to key on but the
+    programme's own Telugu name — so those two are matched by name instead.
+    Verified against a live dump of all 119 `mytdp.program` rows on
+    2026-08-22: 'స్వచ్ఛ' and 'ఆంధ్ర' both appear in exactly the three
+    "స్వచ్ఛ(ాంధ్ర / ఆంధ్ర) ... స్వర్ణాంధ్ర" rows and nowhere else; 'పట్టాదార్'
+    appears in exactly the three "పట్టాదార్ పాస్ బుక్ పంపిణీ" rows and
+    nowhere else. If the party starts naming an unrelated programme with
+    either word, this starts over-matching — there is no structural
+    guarantee against that, only the observed data.
+    """
+    name = _norm_program(program_name)
+    if name == "pedala sevalo":
+        return "mp.program_type_id = %s", (_PEDALA_SEVALO_PROGRAM_TYPE_ID,)
+    if name == "swatch andhra":
+        return "mp.name LIKE %s AND mp.name LIKE %s", ("%స్వచ్ఛ%", "%ఆంధ్ర%")
+    if name == "pattadar passbook":
+        return "mp.name LIKE %s", ("%పట్టాదార్%",)
+    raise ValueError(f"{program_name!r} is not a monthly activity")
 
 
 def _leader_with_role_sql() -> str:
@@ -374,15 +427,27 @@ def program_leaders(
     — `leader` holds a handful of rows for other parties. Capped at
     `MAX_PAGE_SIZE` for the same reason the meeting member table is.
 
-    Calendar Meetings (see `_is_calendar_meetings`) is the exception, and the
-    only programme with an attendance fact to report: `attended` is whether
-    this leader has a `meeting_attendance` row for any meeting they were
-    invited to that month, whatever its `status` — the same "attended"
-    definition `/api/meetings` itself uses. **No other programme returns the
-    field at all**, rather than returning a false one, since no other
-    programme has an invitee list to be absent from.
-    `meeting_invitee.tdp_cadre_id` is the only column shared with
-    `party_track.leader`, so that is the join key.
+    Two groups of programmes report a real `attended` fact, both off
+    `mytdp`, neither off anything this service itself writes:
+
+    * **Calendar Meetings** (see `_is_calendar_meetings`) — whether this
+      leader has a `meeting_attendance` row for any meeting they were
+      invited to that month, whatever its `status`, the same "attended"
+      definition `/api/meetings` itself uses. `meeting_invitee.tdp_cadre_id`
+      is the join key into `party_track.leader`.
+    * **`_MONTHLY_ACTIVITY_PROGRAMS`** (Pedala Sevalo, Swatch Andhra,
+      Pattadar Passbook) — whether this leader has a `program_attendance`
+      row (`pa.user_id`, the same `tdp_cadre_id`) for any `mytdp.program`
+      event belonging to that activity whose `[from_date, to_date]` span
+      overlaps the requested month — see `_monthly_activity_mytdp_filter`.
+      This is a real check-in fact, the same kind Calendar Meetings reports,
+      not anything derived from `leader_program_activity` — that table
+      never carries a leader's presence, only the remark
+      `save_leader_monthly_activity` writes alongside it.
+
+    **Every other programme returns no field at all**, rather than a false
+    one, since no invitee/attendance fact exists for them anywhere (their
+    Update modal is a dated list, not an event with real turnout).
 
     The query starts from `meeting_invitee`, not `leader`: some roles run to
     tens of thousands of members (Booth Convenor is ~44.6k) while an
@@ -399,6 +464,7 @@ def program_leaders(
         (activity_id,),
     )
     is_calendar = _is_calendar_meetings(program_name)
+    is_monthly = _is_monthly_activity(program_name)
 
     if is_calendar:
         rows = db.rows(
@@ -423,6 +489,49 @@ def program_leaders(
                  ORDER BY l.leader_name
                  LIMIT %s""",
             (year, month, role_id, config.LEADER_PARTY_ID, config.MAX_PAGE_SIZE),
+        )
+    elif is_monthly:
+        # A real fact, off `mytdp.program`/`mytdp.program_attendance` — the
+        # same domain Calendar Meetings reads, not `leader_program_activity`
+        # (that table has no attendance concept of its own; see
+        # `save_leader_monthly_activity`, which still owns the remark).
+        # `pa.user_id` is the only column shared with `party_track.leader`
+        # (as `tdp_cadre_id`), the same join shape `meeting_invitee` uses
+        # above. See `_monthly_activity_mytdp_filter` for how `mp` is scoped
+        # to this one activity.
+        #
+        # The attendance lookup is built as its own subquery, driven from
+        # `program_attendance` through its indexed `program_id` — not joined
+        # to `l` directly the way it reads most naturally. `user_id` carries
+        # no index at all (495k rows, checked live), so a per-roster-row
+        # lookup against it — the shape a direct `LEFT JOIN ... ON pa.user_id
+        # = l.tdp_cadre_id` forces — timed out outright against the real
+        # roster. Pre-filtering by the handful of `mp` rows this activity and
+        # month actually match first keeps the expensive side small before it
+        # ever meets the roster.
+        mytdp_filter_sql, mytdp_filter_params = _monthly_activity_mytdp_filter(program_name)
+        month_start, month_end = _month_bounds(year, month)
+        rows = db.rows(
+            f"""SELECT l.leader_id, l.leader_name, l.mobile_no, l.tdp_cadre_id,
+                       r.role_name, a.name AS assembly_name, p.parliament_name,
+                       (att.user_id IS NOT NULL) AS attended
+                  FROM {_leader_with_role_sql()} l
+                  JOIN {config.PARTY_TRACK_DB}.role r ON r.role_id = l.role_id
+                  LEFT JOIN assembly a ON a.id = l.constituency_id
+                  LEFT JOIN parliament p ON p.id = l.parliament_id
+                  LEFT JOIN (
+                        SELECT DISTINCT pa.user_id
+                          FROM program_attendance pa
+                          JOIN program mp
+                            ON pa.program_id = mp.id
+                           AND {mytdp_filter_sql}
+                           AND mp.from_date <= %s AND mp.to_date >= %s
+                       ) att ON att.user_id = l.tdp_cadre_id
+                 WHERE l.role_id = %s AND l.is_deleted = 'N' AND l.party_id = %s
+                   AND {access.leader(scope)}
+                 ORDER BY l.leader_name
+                 LIMIT %s""",
+            (*mytdp_filter_params, month_end, month_start, role_id, config.LEADER_PARTY_ID, config.MAX_PAGE_SIZE),
         )
     else:
         # No join to `leader_program_activity` here: with the counts gone
@@ -454,7 +563,7 @@ def program_leaders(
             "mobile": r["mobile_no"] or "—",
             "cadreId": r["tdp_cadre_id"],
         }
-        if is_calendar:
+        if is_calendar or is_monthly:
             leader["attended"] = bool(r["attended"])
         out.append(leader)
     return out
@@ -549,23 +658,14 @@ class LeaderMeetingRemarksIn(BaseModel):
     remarks: str = Field(default="", max_length=config.MAX_REMARKS_CHARS)
 
 
-@router.put("/leaders/{leader_id}/meetings/{meeting_id}/remarks")
-def save_leader_meeting_remarks(
-    leader_id: int,
-    meeting_id: int,
-    body: LeaderMeetingRemarksIn = Body(...),
-    scope: Scope = Depends(caller_scope),
-) -> dict[str, Any]:
-    """Calendar Meetings' own remarks capture, into `leader_meeting_attendance`
-    rather than `mytdp.feedback_comment` — accepted regardless of whether the
-    leader attended, unlike the main Meetings screen's absent-only rule.
-
-    `attendance_type_id` is stamped from the same `meeting_attendance` truth
-    `program_leader_meetings` reads (Attended/Absent), not chosen by the
-    caller — it records what actually happened, alongside the remark, rather
-    than trusting the client to say so. `file_path` is left untouched here:
-    there is no upload endpoint yet to have written one.
-    """
+def _leader_meeting_attendance_fact(leader_id: int, meeting_id: int, scope: Scope) -> int:
+    """Confirms the leader was invited to this meeting (404s otherwise) and
+    returns the real `attendance_type_id` for it, off the same
+    `meeting_attendance` truth `program_leader_meetings` reads — not chosen
+    by the caller, so it is re-derived here rather than passed in, and
+    shared by the remarks-save and file-upload writes below: both stamp it
+    on every write, alongside whichever one field is actually theirs, so it
+    never goes stale on a row a later write only touches half of."""
     leader = _scoped_leader(leader_id, scope)
     if leader is None or leader["tdp_cadre_id"] is None:
         raise HTTPException(status_code=404, detail="Unknown leader")
@@ -583,9 +683,16 @@ def save_leader_meeting_remarks(
         "SELECT 1 FROM meeting_attendance WHERE meeting_id = %s AND mid = %s LIMIT 1",
         (meeting_id, invitee["membership_id"]),
     )
-    attendance_type_id = _ATTENDANCE_TYPE_ATTENDED if attended else _ATTENDANCE_TYPE_ABSENT
-    remarks = body.remarks.strip()
+    return _ATTENDANCE_TYPE_ATTENDED if attended else _ATTENDANCE_TYPE_ABSENT
 
+
+def _upsert_meeting_attendance_row(leader_id: int, meeting_id: int, attendance_type_id: int, **fields: Any) -> None:
+    """Insert-or-update the one `leader_meeting_attendance` row for (leader,
+    meeting), always refreshing `attendance_type_id` plus whichever other
+    columns are given — a remarks-only write must not blank out a file
+    already on the row, and a file-only write must not blank out a remark,
+    the same reasoning `_upsert_monthly_activity_row` follows for the three
+    monthly programmes."""
     existing = db.one(
         f"""SELECT leader_meeting_attendance_id
               FROM {config.PARTY_TRACK_DB}.leader_meeting_attendance
@@ -595,20 +702,100 @@ def save_leader_meeting_remarks(
         (leader_id, meeting_id),
     )
     if existing:
+        set_sql = "attendance_type_id = %s, " + ", ".join(f"{col} = %s" for col in fields)
         db.execute(
             f"""UPDATE {config.PARTY_TRACK_DB}.leader_meeting_attendance
-                   SET remarks = %s, attendance_type_id = %s, updated_time = NOW()
+                   SET {set_sql}, updated_time = NOW()
                  WHERE leader_meeting_attendance_id = %s""",
-            (remarks, attendance_type_id, existing["leader_meeting_attendance_id"]),
+            (attendance_type_id, *fields.values(), existing["leader_meeting_attendance_id"]),
         )
     else:
+        cols = "leader_id, meeting_id, attendance_type_id, " + ", ".join(fields)
+        placeholders = "%s, %s, %s, " + ", ".join(["%s"] * len(fields))
         db.execute(
             f"""INSERT INTO {config.PARTY_TRACK_DB}.leader_meeting_attendance
-                   (leader_id, meeting_id, attendance_type_id, remarks, is_deleted, inserted_time)
-                 VALUES (%s, %s, %s, %s, 'N', NOW())""",
-            (leader_id, meeting_id, attendance_type_id, remarks),
+                   ({cols}, is_deleted, inserted_time)
+                 VALUES ({placeholders}, 'N', NOW())""",
+            (leader_id, meeting_id, attendance_type_id, *fields.values()),
         )
+
+
+@router.put("/leaders/{leader_id}/meetings/{meeting_id}/remarks")
+def save_leader_meeting_remarks(
+    leader_id: int,
+    meeting_id: int,
+    body: LeaderMeetingRemarksIn = Body(...),
+    scope: Scope = Depends(caller_scope),
+) -> dict[str, Any]:
+    """Calendar Meetings' own remarks capture, into `leader_meeting_attendance`
+    rather than `mytdp.feedback_comment` — accepted regardless of whether the
+    leader attended, unlike the main Meetings screen's absent-only rule. See
+    `upload_leader_meeting_file` for the file half of this same row.
+    """
+    attendance_type_id = _leader_meeting_attendance_fact(leader_id, meeting_id, scope)
+    remarks = body.remarks.strip()
+    _upsert_meeting_attendance_row(leader_id, meeting_id, attendance_type_id, remarks=remarks)
     return {"leaderId": leader_id, "meetingId": meeting_id, "remarks": remarks}
+
+
+@router.post("/leaders/{leader_id}/meetings/{meeting_id}/file")
+async def upload_leader_meeting_file(
+    leader_id: int,
+    meeting_id: int,
+    file: UploadFile = File(...),
+    scope: Scope = Depends(caller_scope),
+) -> dict[str, Any]:
+    """Uploads one file for a leader's own row on a real Calendar Meeting,
+    into S3 (`storage.upload`) with its `bucket/key` path saved onto the
+    same `leader_meeting_attendance` row `save_leader_meeting_remarks`
+    writes the remark to. Accepts the same file types every other upload
+    field in this app's frontend already restricts its picker to (PDF or a
+    common image type)."""
+    attendance_type_id = _leader_meeting_attendance_fact(leader_id, meeting_id, scope)
+    if file.content_type not in storage.ALLOWED_CONTENT_TYPES:
+        raise HTTPException(status_code=400, detail="Only PDF or image files are accepted.")
+
+    content = await file.read()
+    try:
+        file_path = storage.upload(
+            folder="calendar_meeting", content=content, content_type=file.content_type, filename=file.filename
+        )
+    except storage.StorageUnavailable as err:
+        raise HTTPException(status_code=503, detail="File storage is not configured on the server.") from err
+    except storage.UploadFailed as err:
+        raise HTTPException(status_code=502, detail="Could not upload the file to storage.") from err
+
+    _upsert_meeting_attendance_row(leader_id, meeting_id, attendance_type_id, file_path=file_path)
+    return {"leaderId": leader_id, "meetingId": meeting_id, "filePath": file_path}
+
+
+@router.get("/leaders/{leader_id}/meetings/{meeting_id}/file-url")
+def leader_meeting_file_url(
+    leader_id: int, meeting_id: int, scope: Scope = Depends(caller_scope)
+) -> dict[str, Any]:
+    """A fresh 5-minute link to the file `upload_leader_meeting_file` saved
+    for this leader/meeting — generated per call rather than cached, same as
+    the monthly activities' own file link, since the bucket refuses
+    direct/public access."""
+    if _scoped_leader(leader_id, scope) is None:
+        raise HTTPException(status_code=404, detail="Unknown leader")
+    row = db.one(
+        f"""SELECT file_path
+              FROM {config.PARTY_TRACK_DB}.leader_meeting_attendance
+             WHERE leader_id = %s AND meeting_id = %s
+               AND (is_deleted IS NULL OR is_deleted = 'N')
+             ORDER BY leader_meeting_attendance_id DESC LIMIT 1""",
+        (leader_id, meeting_id),
+    )
+    if row is None or not row["file_path"]:
+        raise HTTPException(status_code=404, detail="No file recorded for this leader and meeting")
+    try:
+        url = storage.presigned_url(row["file_path"])
+    except storage.StorageUnavailable as err:
+        raise HTTPException(status_code=503, detail="File storage is not configured on the server.") from err
+    except storage.UploadFailed as err:
+        raise HTTPException(status_code=502, detail="Could not reach file storage.") from err
+    return {"url": url}
 
 
 def _monthly_activity_program(program_id: int) -> str:
@@ -637,6 +824,31 @@ def _monthly_activity_row(leader_id: int, program_id: int, month_id: int | None)
              ORDER BY leader_program_activity_id DESC LIMIT 1""",
         (leader_id, program_id, month_id),
     )
+
+
+def _upsert_monthly_activity_row(leader_id: int, program_id: int, month_id: int, **fields: Any) -> None:
+    """Insert-or-update the one `leader_program_activity` row for (leader,
+    programme, month), writing only the given columns — the remarks save and
+    the file upload below both call this, and neither must blank out
+    whatever the other one already wrote."""
+    existing = _monthly_activity_row(leader_id, program_id, month_id)
+    if existing:
+        set_sql = ", ".join(f"{col} = %s" for col in fields)
+        db.execute(
+            f"""UPDATE {config.PARTY_TRACK_DB}.leader_program_activity
+                   SET {set_sql}, updated_time = NOW()
+                 WHERE leader_program_activity_id = %s""",
+            (*fields.values(), existing["leader_program_activity_id"]),
+        )
+    else:
+        cols = ", ".join(fields)
+        placeholders = ", ".join(["%s"] * len(fields))
+        db.execute(
+            f"""INSERT INTO {config.PARTY_TRACK_DB}.leader_program_activity
+                   (leader_id, program_id, month_id, {cols}, is_deleted, inserted_time)
+                 VALUES (%s, %s, %s, {placeholders}, 'N', NOW())""",
+            (leader_id, program_id, month_id, *fields.values()),
+        )
 
 
 @router.get("/leaders/{leader_id}/monthly-activity")
@@ -687,10 +899,12 @@ def save_leader_monthly_activity(
 
     An upsert on (leader, programme, month) rather than an insert: the row
     *is* the month, so saving twice corrects the record rather than adding a
-    second one. `total`/`completed` are left alone — nothing writes them any
+    second one — `_upsert_monthly_activity_row` owns that, writing only
+    `remarks` so a file already on this row from
+    `upload_leader_monthly_activity_file` survives a later remarks-only
+    save. `total`/`completed` are left alone — nothing writes them any
     more, and the card that used to read them no longer does (see
-    `program_leaders`). `file_path` likewise: there is still no upload
-    endpoint to have written one, same as `save_leader_meeting_remarks`.
+    `program_leaders`).
 
     A period with no `party_track.month` row is refused rather than
     invented. That table is hand-seeded and runs a month or two behind, so
@@ -712,27 +926,88 @@ def save_leader_monthly_activity(
         )
 
     remarks = body.remarks.strip()
-    existing = _monthly_activity_row(leader_id, body.programId, month_id)
-    if existing:
-        db.execute(
-            f"""UPDATE {config.PARTY_TRACK_DB}.leader_program_activity
-                   SET remarks = %s, updated_time = NOW()
-                 WHERE leader_program_activity_id = %s""",
-            (remarks, existing["leader_program_activity_id"]),
-        )
-    else:
-        db.execute(
-            f"""INSERT INTO {config.PARTY_TRACK_DB}.leader_program_activity
-                   (leader_id, program_id, month_id, remarks, is_deleted, inserted_time)
-                 VALUES (%s, %s, %s, %s, 'N', NOW())""",
-            (leader_id, body.programId, month_id, remarks),
-        )
+    _upsert_monthly_activity_row(leader_id, body.programId, month_id, remarks=remarks)
     return {
         "leaderId": leader_id,
         "programId": body.programId,
         "recorded": True,
         "remarks": remarks,
     }
+
+
+@router.post("/leaders/{leader_id}/monthly-activity/file")
+async def upload_leader_monthly_activity_file(
+    leader_id: int,
+    program_id: int = Form(...),
+    year: int = Form(..., ge=2000, le=2100),
+    month: int = Form(..., ge=1, le=12),
+    file: UploadFile = File(...),
+    scope: Scope = Depends(caller_scope),
+) -> dict[str, Any]:
+    """Uploads one file for a leader's month on one of the three monthly
+    activities, into S3 (`storage.upload`), and records its `bucket/key` path
+    on the same `leader_program_activity` row `save_leader_monthly_activity`
+    writes the remark to — via `_upsert_monthly_activity_row`, so whichever
+    of the two is saved first does not erase the other.
+
+    Accepts the same file types every other upload field in this app's
+    frontend already restricts its picker to (PDF or a common image type),
+    not the portal's PDF-only nomination rule — this is a proof-of-activity
+    photo/document, not a nomination form.
+    """
+    if _scoped_leader(leader_id, scope) is None:
+        raise HTTPException(status_code=404, detail="Unknown leader")
+    _monthly_activity_program(program_id)
+    if file.content_type not in storage.ALLOWED_CONTENT_TYPES:
+        raise HTTPException(status_code=400, detail="Only PDF or image files are accepted.")
+
+    month_id = _month_id(year, month)
+    if month_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{year}-{month:02d} is not open for reporting "
+                   f"({config.PARTY_TRACK_DB}.month has no row for it)",
+        )
+
+    content = await file.read()
+    try:
+        file_path = storage.upload(
+            folder="monthly_activity", content=content, content_type=file.content_type, filename=file.filename
+        )
+    except storage.StorageUnavailable as err:
+        raise HTTPException(status_code=503, detail="File storage is not configured on the server.") from err
+    except storage.UploadFailed as err:
+        raise HTTPException(status_code=502, detail="Could not upload the file to storage.") from err
+
+    _upsert_monthly_activity_row(leader_id, program_id, month_id, file_path=file_path)
+    return {"leaderId": leader_id, "programId": program_id, "filePath": file_path}
+
+
+@router.get("/leaders/{leader_id}/monthly-activity/file-url")
+def leader_monthly_activity_file_url(
+    leader_id: int,
+    program_id: int = Query(...),
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12),
+    scope: Scope = Depends(caller_scope),
+) -> dict[str, Any]:
+    """A fresh 5-minute link to the file `upload_leader_monthly_activity_file`
+    saved for this leader/programme/month — generated per call rather than
+    cached, same as the portal's own nomination-file link, since the bucket
+    itself refuses direct/public access."""
+    if _scoped_leader(leader_id, scope) is None:
+        raise HTTPException(status_code=404, detail="Unknown leader")
+    _monthly_activity_program(program_id)
+    row = _monthly_activity_row(leader_id, program_id, _month_id(year, month))
+    if row is None or not row["file_path"]:
+        raise HTTPException(status_code=404, detail="No file recorded for this leader, programme and month")
+    try:
+        url = storage.presigned_url(row["file_path"])
+    except storage.StorageUnavailable as err:
+        raise HTTPException(status_code=503, detail="File storage is not configured on the server.") from err
+    except storage.UploadFailed as err:
+        raise HTTPException(status_code=502, detail="Could not reach file storage.") from err
+    return {"url": url}
 
 
 # `party_track.leader_meetings.meeting_type` is `varchar(20)` — too short for
@@ -840,8 +1115,8 @@ def add_leader_log_entry(
     scope: Scope = Depends(caller_scope),
 ) -> dict[str, Any]:
     """Adds one row to a leader's log for one programme. `file_path` is left
-    unset here, same as `save_leader_meeting_remarks` above: there is no
-    upload endpoint yet to have written one.
+    unset here — a file goes on afterwards, by this row's own id, through
+    `upload_leader_log_entry_file`, not through this call.
     """
     if _scoped_leader(leader_id, scope) is None:
         raise HTTPException(status_code=404, detail="Unknown leader")
@@ -857,6 +1132,74 @@ def add_leader_log_entry(
         (leader_id, meeting_type, body.date, remarks),
     )
     return {"id": new_id, "date": body.date, "remarks": remarks}
+
+
+@router.post("/leaders/{leader_id}/log-entries/{entry_id}/file")
+async def upload_leader_log_entry_file(
+    leader_id: int,
+    entry_id: int,
+    file: UploadFile = File(...),
+    scope: Scope = Depends(caller_scope),
+) -> dict[str, Any]:
+    """Uploads one file onto an existing log entry — `add_leader_log_entry`
+    already created the row, so this only ever updates `file_path` on the
+    one row `entry_id` names, into S3 (`storage.upload`). Unlike
+    `leader_meeting_attendance`/`leader_program_activity`, there is no
+    upsert here: a log entry with no matching row is a bad id, not a row to
+    invent."""
+    if _scoped_leader(leader_id, scope) is None:
+        raise HTTPException(status_code=404, detail="Unknown leader")
+    if file.content_type not in storage.ALLOWED_CONTENT_TYPES:
+        raise HTTPException(status_code=400, detail="Only PDF or image files are accepted.")
+
+    content = await file.read()
+    try:
+        file_path = storage.upload(
+            folder="log_entry", content=content, content_type=file.content_type, filename=file.filename
+        )
+    except storage.StorageUnavailable as err:
+        raise HTTPException(status_code=503, detail="File storage is not configured on the server.") from err
+    except storage.UploadFailed as err:
+        raise HTTPException(status_code=502, detail="Could not upload the file to storage.") from err
+
+    updated = db.execute(
+        f"""UPDATE {config.PARTY_TRACK_DB}.leader_meetings
+               SET file_path = %s, updated_time = NOW()
+             WHERE leader_meetings_id = %s AND leader_id = %s
+               AND (is_deleted IS NULL OR is_deleted = 'N')""",
+        (file_path, entry_id, leader_id),
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    return {"id": entry_id, "filePath": file_path}
+
+
+@router.get("/leaders/{leader_id}/log-entries/{entry_id}/file-url")
+def leader_log_entry_file_url(
+    leader_id: int, entry_id: int, scope: Scope = Depends(caller_scope)
+) -> dict[str, Any]:
+    """A fresh 5-minute link to the file `upload_leader_log_entry_file`
+    saved for this entry — generated per call rather than cached, same as
+    every other file link in this router, since the bucket refuses
+    direct/public access."""
+    if _scoped_leader(leader_id, scope) is None:
+        raise HTTPException(status_code=404, detail="Unknown leader")
+    row = db.one(
+        f"""SELECT file_path
+              FROM {config.PARTY_TRACK_DB}.leader_meetings
+             WHERE leader_meetings_id = %s AND leader_id = %s
+               AND (is_deleted IS NULL OR is_deleted = 'N')""",
+        (entry_id, leader_id),
+    )
+    if row is None or not row["file_path"]:
+        raise HTTPException(status_code=404, detail="No file recorded for this entry")
+    try:
+        url = storage.presigned_url(row["file_path"])
+    except storage.StorageUnavailable as err:
+        raise HTTPException(status_code=503, detail="File storage is not configured on the server.") from err
+    except storage.UploadFailed as err:
+        raise HTTPException(status_code=502, detail="Could not reach file storage.") from err
+    return {"url": url}
 
 
 @router.delete("/leaders/{leader_id}/log-entries/{entry_id}")
