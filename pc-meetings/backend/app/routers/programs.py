@@ -9,10 +9,12 @@ The role/activity-summary/leaders routes are real and live off four
 `leader` (the 71k-row real roster), `program` and `program_role` (the
 catalog of trackable programmes and which roles they apply to), and
 `leader_program_activity` (one row per leader/programme/month once someone
-records participation). The last three are freshly added and still empty in
-production, so Updated/Not updated and the whole activity-summary card read
-zero/empty until the party starts populating them — Total/Members do not,
-since those come straight off the `leader` roster.
+records an update). The last three are freshly added and were still empty in
+production when this was written, so Updated/Not updated and the whole
+activity-summary card read zero/empty until rows start arriving —
+Total/Members do not, since those come straight off the `leader` roster. The
+one thing in this service that writes `leader_program_activity` is
+`save_leader_monthly_activity`, for the three programmes listed below.
 
 `party_track.activity` is a separate, long-lived scoring system
 (`leader_activity`, ~800k rows, weighted points) unrelated to this feature.
@@ -20,9 +22,9 @@ since those come straight off the `leader` roster.
 Programmes page's own "Activity" column and filter are `program`, since
 `leader_program_activity.program_id` is what it actually joins against.
 
-Calendar Meetings is the one programme `/leaders` does not read
-`leader_program_activity` for: it counts real committee-meeting attendance
-from `mytdp.meetings`/`meeting_invitee`/`meeting_attendance` instead — see
+`/leaders` reads neither of those: it is the roster of one role, and the
+only programme it reports a fact about is Calendar Meetings, whose
+`attended` comes from `mytdp.meeting_invitee`/`meeting_attendance` — see
 `_is_calendar_meetings` and the branch in `program_leaders`.
 
 Every roster count and member list here is narrowed to the assemblies the caller
@@ -30,6 +32,25 @@ was granted, through `leader.constituency_id` — the same id `mytdp.assembly.id
 uses (see `access.py`). A role with no leader inside the caller's assemblies
 drops out of `/roles` and both summary cards entirely, rather than showing as a
 row of zeroes.
+
+Each programme's Update modal is backed by one of three tables, and which
+one is decided by the programme's name alone:
+
+* **Calendar Meeting** — `leader_meeting_attendance`, keyed by the real
+  `mytdp` meeting the leader was invited to (`program_leader_meetings`,
+  `save_leader_meeting_remarks`).
+* **Pedala Sevalo, Swatch Andhra, Pattadar Passbook** —
+  `leader_program_activity`, one row per leader/programme/month
+  (`_MONTHLY_ACTIVITY_PROGRAMS`, `program_leader_monthly_activity`,
+  `save_leader_monthly_activity`). This is the same table the two summary
+  cards count Updated/Not updated from, so recording an update here is what
+  finally makes those figures move for these three.
+* **everything else** — `leader_meetings`, a dated list the leader adds to
+  by hand (`program_leader_log_entries`, `add_leader_log_entry`).
+
+The three are fenced off `leader_meetings` rather than merely pointed
+elsewhere: the log-entry routes raise for them instead of writing a row no
+reader would look at again.
 """
 
 from __future__ import annotations
@@ -58,9 +79,35 @@ _CALENDAR_MEETINGS_RE = re.compile(r"calendar\s*meetings?", re.IGNORECASE)
 _ATTENDANCE_TYPE_ATTENDED = 1
 _ATTENDANCE_TYPE_ABSENT = 3
 
+# The programmes recorded as one `leader_program_activity` row per
+# leader/month rather than as a dated list in `leader_meetings`. That table
+# has a `month_id` and no date column at all, so a month is the finest period
+# it can key a row by — hence one monthly record per leader, not an entry per
+# outing.
+#
+# Matched on the name, like `_is_calendar_meetings`, rather than on the live
+# ids (1, 6, 7): `program` is a hand-seeded 10-row table, and a name is the
+# thing the frontend and this module can agree on without either holding a
+# copy of the other's ids. Names are compared through `_norm_program`, so
+# stray or doubled whitespace in the seed data does not decide which table a
+# programme's data lands in.
+_MONTHLY_ACTIVITY_PROGRAMS = frozenset({
+    "pedala sevalo",
+    "swatch andhra",
+    "pattadar passbook",
+})
+
+
+def _norm_program(program_name: str | None) -> str:
+    return re.sub(r"\s+", " ", str(program_name or "").strip().lower())
+
 
 def _is_calendar_meetings(program_name: str | None) -> bool:
     return bool(program_name and _CALENDAR_MEETINGS_RE.search(program_name))
+
+
+def _is_monthly_activity(program_name: str | None) -> bool:
+    return _norm_program(program_name) in _MONTHLY_ACTIVITY_PROGRAMS
 
 
 def _leader_with_role_sql() -> str:
@@ -308,10 +355,16 @@ def program_leaders(
     month: int = Query(..., ge=1, le=12),
     scope: Scope = Depends(caller_scope),
 ) -> list[dict[str, Any]]:
-    """The third Programmes card: every active leader in one role, with
-    their `leader_program_activity` participation for one programme and
-    month — 0/0 for a leader who has not logged anything yet, not an
-    absent row, so the card always has one row per roster member.
+    """The third Programmes card: every active leader in one role, for one
+    programme and month — one row per roster member, whether or not anything
+    has been recorded against the programme for them yet.
+
+    **The card reports no counts.** It used to carry `participated`/
+    `completed` straight off `leader_program_activity.total`/`.completed`,
+    two columns nothing in this service has ever written, so every leader on
+    every screen read 0/0; they are gone rather than left reading zero.
+    Whether a leader has been updated this month is the Updated/Not updated
+    pair on the two summary cards above, which count real rows.
 
     `assembly`/`parliament` are `mytdp` tables, not `party_track` —
     `leader.constituency_id`/`parliament_id` reach across schemas the same
@@ -321,14 +374,15 @@ def program_leaders(
     — `leader` holds a handful of rows for other parties. Capped at
     `MAX_PAGE_SIZE` for the same reason the meeting member table is.
 
-    Calendar Meetings (see `_is_calendar_meetings`) is the exception: it
-    counts real `mytdp` committee-meeting rows instead of
-    `leader_program_activity`, which this programme never writes to.
+    Calendar Meetings (see `_is_calendar_meetings`) is the exception, and the
+    only programme with an attendance fact to report: `attended` is whether
+    this leader has a `meeting_attendance` row for any meeting they were
+    invited to that month, whatever its `status` — the same "attended"
+    definition `/api/meetings` itself uses. **No other programme returns the
+    field at all**, rather than returning a false one, since no other
+    programme has an invitee list to be absent from.
     `meeting_invitee.tdp_cadre_id` is the only column shared with
-    `party_track.leader`, so that is the join key; `participated` is every
-    meeting this leader was invited to in the month, `completed` the ones
-    they attended — any row for them in `meeting_attendance`, whatever its
-    `status`, the same "attended" definition `/api/meetings` itself uses.
+    `party_track.leader`, so that is the join key.
 
     The query starts from `meeting_invitee`, not `leader`: some roles run to
     tens of thousands of members (Booth Convenor is ~44.6k) while an
@@ -337,21 +391,20 @@ def program_leaders(
     members who were never invited to anything, and the real, non-zero rows
     fell past the limit unseen. Starting from the invitee list means every
     row returned has already been invited to at least one meeting this
-    month — this branch drops the "every roster member, 0/0 if none" rule
-    the `leader_program_activity` branch below keeps.
+    month — this branch drops the "one row per roster member" rule the other
+    branch below keeps.
     """
-    month_id = _month_id(year, month)
     program_name = db.scalar(
         f"SELECT program_name FROM {config.PARTY_TRACK_DB}.program WHERE program_id = %s",
         (activity_id,),
     )
+    is_calendar = _is_calendar_meetings(program_name)
 
-    if _is_calendar_meetings(program_name):
+    if is_calendar:
         rows = db.rows(
             f"""SELECT l.leader_id, l.leader_name, l.mobile_no, l.tdp_cadre_id,
                        r.role_name, a.name AS assembly_name, p.parliament_name,
-                       COUNT(DISTINCT mi.meeting_id) AS participated,
-                       COUNT(DISTINCT CASE WHEN att.mid IS NOT NULL THEN mi.meeting_id END) AS completed
+                       MAX(att.mid IS NOT NULL) AS attended
                   FROM meeting_invitee mi
                   JOIN {_leader_with_role_sql()} l ON l.tdp_cadre_id = mi.tdp_cadre_id
                   JOIN {config.PARTY_TRACK_DB}.role r ON r.role_id = l.role_id
@@ -372,25 +425,26 @@ def program_leaders(
             (year, month, role_id, config.LEADER_PARTY_ID, config.MAX_PAGE_SIZE),
         )
     else:
+        # No join to `leader_program_activity` here: with the counts gone
+        # there is nothing on that row this card shows. What has been
+        # recorded for one leader is fetched per-leader by the Update modal
+        # (`program_leader_monthly_activity`), not smuggled into the roster.
         rows = db.rows(
             f"""SELECT l.leader_id, l.leader_name, l.mobile_no, l.tdp_cadre_id,
-                       r.role_name, a.name AS assembly_name, p.parliament_name,
-                       lpa.total AS participated, lpa.completed AS completed
+                       r.role_name, a.name AS assembly_name, p.parliament_name
                   FROM {_leader_with_role_sql()} l
                   JOIN {config.PARTY_TRACK_DB}.role r ON r.role_id = l.role_id
                   LEFT JOIN assembly a ON a.id = l.constituency_id
                   LEFT JOIN parliament p ON p.id = l.parliament_id
-                  LEFT JOIN {config.PARTY_TRACK_DB}.leader_program_activity lpa
-                         ON lpa.leader_id = l.leader_id AND lpa.program_id = %s AND lpa.month_id = %s
-                        AND (lpa.is_deleted IS NULL OR lpa.is_deleted = 'N')
                  WHERE l.role_id = %s AND l.is_deleted = 'N' AND l.party_id = %s
                    AND {access.leader(scope)}
                  ORDER BY l.leader_name
                  LIMIT %s""",
-            (activity_id, month_id, role_id, config.LEADER_PARTY_ID, config.MAX_PAGE_SIZE),
+            (role_id, config.LEADER_PARTY_ID, config.MAX_PAGE_SIZE),
         )
-    return [
-        {
+    out = []
+    for r in rows:
+        leader = {
             "id": r["leader_id"],
             "mid": str(r["leader_id"]),
             "name": r["leader_name"] or "—",
@@ -399,11 +453,11 @@ def program_leaders(
             "assembly": r["assembly_name"] or "—",
             "mobile": r["mobile_no"] or "—",
             "cadreId": r["tdp_cadre_id"],
-            "participated": int(r["participated"] or 0),
-            "completed": int(r["completed"] or 0),
         }
-        for r in rows
-    ]
+        if is_calendar:
+            leader["attended"] = bool(r["attended"])
+        out.append(leader)
+    return out
 
 
 def _scoped_leader(leader_id: int, scope: Scope) -> dict[str, Any] | None:
@@ -415,6 +469,25 @@ def _scoped_leader(leader_id: int, scope: Scope) -> dict[str, Any] | None:
         f"""SELECT l.tdp_cadre_id FROM {config.PARTY_TRACK_DB}.leader l
              WHERE l.leader_id = %s AND {access.leader(scope)}""",
         (leader_id,),
+    )
+
+
+def _leader_exists(leader_id: int) -> bool:
+    """Not `_leader_cadre_id(...) is not None`: `tdp_cadre_id` is nullable, so
+    that reads a real leader with no cadre id as an unknown one. Only the
+    Calendar Meetings routes need the cadre id (it is their join key into
+    `mytdp`); everything else keyed on `leader_id` just needs to know the
+    leader is there."""
+    return db.scalar(
+        f"SELECT 1 FROM {config.PARTY_TRACK_DB}.leader WHERE leader_id = %s",
+        (leader_id,),
+    ) is not None
+
+
+def _program_name(program_id: int) -> str | None:
+    return db.scalar(
+        f"SELECT program_name FROM {config.PARTY_TRACK_DB}.program WHERE program_id = %s",
+        (program_id,),
     )
 
 
@@ -538,14 +611,141 @@ def save_leader_meeting_remarks(
     return {"leaderId": leader_id, "meetingId": meeting_id, "remarks": remarks}
 
 
+def _monthly_activity_program(program_id: int) -> str:
+    """The programme name behind a `leader_program_activity` route, refusing
+    any programme that is not recorded that way rather than reading or
+    writing the wrong table on its behalf."""
+    program_name = _program_name(program_id)
+    if program_name is None:
+        raise HTTPException(status_code=404, detail="Unknown programme")
+    if not _is_monthly_activity(program_name):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{program_name} is not recorded as a monthly activity",
+        )
+    return program_name
+
+
+def _monthly_activity_row(leader_id: int, program_id: int, month_id: int | None):
+    if month_id is None:
+        return None
+    return db.one(
+        f"""SELECT leader_program_activity_id, remarks, file_path
+              FROM {config.PARTY_TRACK_DB}.leader_program_activity
+             WHERE leader_id = %s AND program_id = %s AND month_id = %s
+               AND (is_deleted IS NULL OR is_deleted = 'N')
+             ORDER BY leader_program_activity_id DESC LIMIT 1""",
+        (leader_id, program_id, month_id),
+    )
+
+
+@router.get("/leaders/{leader_id}/monthly-activity")
+def program_leader_monthly_activity(
+    leader_id: int,
+    program_id: int = Query(...),
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12),
+) -> dict[str, Any]:
+    """The Update modal for Pedala Sevalo, Swatch Andhra and Pattadar
+    Passbook: this leader's single record for one programme and month, from
+    `party_track.leader_program_activity`.
+
+    One record, not a list, because that table keys a row by `month_id` and
+    carries no date column — there is nowhere to file a second row for the
+    same leader, programme and month that a reader could tell apart from the
+    first. `recorded` is what separates "nothing has been entered yet" from
+    "entered, and the remark is empty", which the two render differently;
+    absent a `month` row for the period there is nothing to find either way,
+    so that reads as not recorded rather than as an error (`_month_id`).
+    """
+    _monthly_activity_program(program_id)
+    row = _monthly_activity_row(leader_id, program_id, _month_id(year, month))
+    return {
+        "leaderId": leader_id,
+        "programId": program_id,
+        "recorded": row is not None,
+        "remarks": (row["remarks"] if row else None) or "",
+        "filePath": (row["file_path"] if row else None) or "",
+    }
+
+
+class LeaderMonthlyActivityIn(BaseModel):
+    programId: int
+    year: int = Field(..., ge=2000, le=2100)
+    month: int = Field(..., ge=1, le=12)
+    remarks: str = Field(default="", max_length=config.MAX_REMARKS_CHARS)
+
+
+@router.put("/leaders/{leader_id}/monthly-activity")
+def save_leader_monthly_activity(
+    leader_id: int, body: LeaderMonthlyActivityIn = Body(...)
+) -> dict[str, Any]:
+    """Records one leader's month for one of the three monthly programmes,
+    into `leader_program_activity` — the same table the Updated/Not updated
+    figures on both summary cards are counted from, so a save here is what
+    moves them.
+
+    An upsert on (leader, programme, month) rather than an insert: the row
+    *is* the month, so saving twice corrects the record rather than adding a
+    second one. `total`/`completed` are left alone — nothing writes them any
+    more, and the card that used to read them no longer does (see
+    `program_leaders`). `file_path` likewise: there is still no upload
+    endpoint to have written one, same as `save_leader_meeting_remarks`.
+
+    A period with no `party_track.month` row is refused rather than
+    invented. That table is hand-seeded and runs a month or two behind, so
+    this is the error the Programmes screen hits first each time it laps the
+    seed — the detail names the period so it is clear what to add, and no
+    `month` row is created here on the guess that it would have looked like
+    its neighbours.
+    """
+    _monthly_activity_program(body.programId)
+    if not _leader_exists(leader_id):
+        raise HTTPException(status_code=404, detail="Unknown leader")
+
+    month_id = _month_id(body.year, body.month)
+    if month_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{body.year}-{body.month:02d} is not open for reporting "
+                   f"({config.PARTY_TRACK_DB}.month has no row for it)",
+        )
+
+    remarks = body.remarks.strip()
+    existing = _monthly_activity_row(leader_id, body.programId, month_id)
+    if existing:
+        db.execute(
+            f"""UPDATE {config.PARTY_TRACK_DB}.leader_program_activity
+                   SET remarks = %s, updated_time = NOW()
+                 WHERE leader_program_activity_id = %s""",
+            (remarks, existing["leader_program_activity_id"]),
+        )
+    else:
+        db.execute(
+            f"""INSERT INTO {config.PARTY_TRACK_DB}.leader_program_activity
+                   (leader_id, program_id, month_id, remarks, is_deleted, inserted_time)
+                 VALUES (%s, %s, %s, %s, 'N', NOW())""",
+            (leader_id, body.programId, month_id, remarks),
+        )
+    return {
+        "leaderId": leader_id,
+        "programId": body.programId,
+        "recorded": True,
+        "remarks": remarks,
+    }
+
+
 # `party_track.leader_meetings.meeting_type` is `varchar(20)` — too short for
 # some of `party_track.program`'s own names, so those are stored under a
 # short label instead (confirmed against the live `program` rows: id 3
 # Grievance Meetings, 4 Cadre Meetings, 5 Central Party Office Grievance, 8
-# PC Lunch/Dinner Meetings, 9 Press Meets). Everything else already fits
-# (Pedala Sevalo, Swatch Andhra, Pattadar Passbook, Field Performance, all
-# <=20 chars) and is stored verbatim. Calendar Meeting is deliberately absent
-# here — it never writes to this table, see `leader_meeting_attendance` above.
+# PC Lunch/Dinner Meetings, 9 Press Meets). Field Performance already fits
+# (<=20 chars) and is stored verbatim. Two groups of programmes are
+# deliberately absent: Calendar Meeting, which writes to
+# `leader_meeting_attendance`, and `_MONTHLY_ACTIVITY_PROGRAMS` (Pedala
+# Sevalo, Swatch Andhra, Pattadar Passbook), which write to
+# `leader_program_activity` — none of the five reaches this table at all, and
+# the routes below refuse them rather than labelling them.
 _MEETING_TYPE_LABELS = {
     "grievance meetings": "Grievance",
     "cadre meetings": "Cadre",
@@ -560,11 +760,26 @@ def _meeting_type_label(program_name: str) -> str:
     return _MEETING_TYPE_LABELS.get(name.lower(), name)[:20]
 
 
-def _program_name(program_id: int) -> str | None:
-    return db.scalar(
-        f"SELECT program_name FROM {config.PARTY_TRACK_DB}.program WHERE program_id = %s",
-        (program_id,),
-    )
+def _log_entry_program(program_id: int) -> str | None:
+    """The programme name behind a `leader_meetings` route.
+
+    `None` for an unknown programme — the read below has always treated that
+    as "no entries" rather than an error. A programme recorded in
+    `leader_program_activity` instead is a different matter and raises: a
+    caller asking `leader_meetings` for Pedala Sevalo would otherwise be told
+    "no entries yet" for data that exists in another table, which is exactly
+    the reading a silent empty list invites.
+    """
+    program_name = _program_name(program_id)
+    if program_name is None:
+        return None
+    if _is_monthly_activity(program_name):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{program_name} is recorded as a monthly activity — "
+                   "use the monthly-activity endpoint instead",
+        )
+    return program_name
 
 
 @router.get("/leaders/{leader_id}/log-entries")
@@ -575,9 +790,10 @@ def program_leader_log_entries(
     month: int = Query(..., ge=1, le=12),
     scope: Scope = Depends(caller_scope),
 ) -> list[dict[str, Any]]:
-    """The Update modal for every programme other than Calendar Meetings: a
-    leader's own hand-added date/remarks log for one programme/month, off
-    `party_track.leader_meetings` — a manually-added list, unlike Calendar
+    """The Update modal for the programmes that keep a dated log — every one
+    except Calendar Meetings and `_MONTHLY_ACTIVITY_PROGRAMS`: a leader's own
+    hand-added date/remarks entries for one programme/month, off
+    `party_track.leader_meetings`. A manually-added list, unlike Calendar
     Meetings' real invitee-backed rows, so there is nothing to distinguish
     from "not invited" here, only what has been logged so far.
 
@@ -587,7 +803,7 @@ def program_leader_log_entries(
     """
     if _scoped_leader(leader_id, scope) is None:
         return []
-    program_name = _program_name(program_id)
+    program_name = _log_entry_program(program_id)
     if program_name is None:
         return []
     meeting_type = _meeting_type_label(program_name)
@@ -629,7 +845,7 @@ def add_leader_log_entry(
     """
     if _scoped_leader(leader_id, scope) is None:
         raise HTTPException(status_code=404, detail="Unknown leader")
-    program_name = _program_name(body.programId)
+    program_name = _log_entry_program(body.programId)
     if program_name is None:
         raise HTTPException(status_code=404, detail="Unknown programme")
     meeting_type = _meeting_type_label(program_name)

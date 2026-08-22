@@ -325,8 +325,8 @@ def test_activity_summary_only_carries_real_program_role_pairings():
 
 @live
 def test_program_leaders_cover_the_whole_role_roster():
-    """Every active leader in the role gets a row, even with zero
-    leader_program_activity rows recorded — 0/0, not left out.
+    """Every active leader in the role gets a row, whether or not anything
+    has been recorded against the programme for them — not left out.
 
     The expected count is `_leader_with_role_sql`, not raw `leader.role_id`
     — Minister happens to match either way today, but MLA would not (all
@@ -347,7 +347,125 @@ def test_program_leaders_cover_the_whole_role_roster():
     ).json()
     assert len(data) == expected
     for r in data:
-        assert r["participated"] >= 0 and r["completed"] >= 0
+        assert r["name"] and r["mid"]
+
+
+@live
+def test_program_leaders_report_no_counts():
+    """`participated`/`completed` came off `leader_program_activity.total`/
+    `.completed`, which nothing writes — they are gone, not zero, so nothing
+    downstream can render a fabricated 0/0. `attended` belongs to Calendar
+    Meetings alone (program_id 2): it is a real `meeting_attendance` fact,
+    and no other programme has an invitee list to be absent from."""
+    role = db.one(
+        f"SELECT role_id FROM {config.PARTY_TRACK_DB}.role WHERE role_name = 'Minister'"
+    )
+    base = f"/api/programs/leaders?role_id={role['role_id']}&year=2026&month=7"
+
+    monthly = client.get(base + "&activity_id=1").json()
+    assert monthly, "no Ministers in the roster"
+    for r in monthly:
+        assert "participated" not in r and "completed" not in r
+        assert "attended" not in r
+
+    calendar = client.get(base + "&activity_id=2").json()
+    for r in calendar:
+        assert "participated" not in r and "completed" not in r
+        assert isinstance(r["attended"], bool)
+
+
+# --- the three monthly-activity programmes ----------------------------------
+
+@live
+def test_monthly_activity_reads_an_unrecorded_month_as_not_recorded():
+    """`leader_program_activity` is empty, so every leader reads back
+    `recorded: False` with a blank remark — distinct from a saved row whose
+    remark happens to be empty, which the modal renders differently."""
+    leader_id = db.scalar(
+        f"""SELECT leader_id FROM {config.PARTY_TRACK_DB}.leader
+             WHERE is_deleted = 'N' AND party_id = %s LIMIT 1""",
+        (config.LEADER_PARTY_ID,),
+    )
+    for program_id in (1, 6, 7):  # Pedala Sevalo, Swatch Andhra, Pattadar Passbook
+        data = client.get(
+            f"/api/programs/leaders/{leader_id}/monthly-activity"
+            f"?program_id={program_id}&year=2026&month=7"
+        ).json()
+        assert data["recorded"] is False
+        assert data["remarks"] == "" and data["programId"] == program_id
+
+
+@live
+def test_monthly_activity_refuses_a_programme_recorded_elsewhere():
+    """Only the three belong in `leader_program_activity`. Calendar Meeting
+    (2, `leader_meeting_attendance`) and a dated-log programme (3,
+    `leader_meetings`) are refused rather than read out of the wrong table."""
+    for program_id in (2, 3):
+        res = client.get(
+            f"/api/programs/leaders/1/monthly-activity"
+            f"?program_id={program_id}&year=2026&month=7"
+        )
+        assert res.status_code == 400
+
+
+@live
+def test_log_entries_refuse_the_monthly_programmes():
+    """The fence in the other direction: `leader_meetings` must not answer
+    "no entries yet" for a programme whose data lives in another table."""
+    for program_id in (1, 6, 7):
+        res = client.get(
+            f"/api/programs/leaders/1/log-entries"
+            f"?program_id={program_id}&year=2026&month=7"
+        )
+        assert res.status_code == 400
+        assert "monthly activity" in res.json()["detail"]
+
+        posted = client.post(
+            "/api/programs/leaders/1/log-entries",
+            json={"programId": program_id, "date": "2026-07-01", "remarks": "x"},
+        )
+        assert posted.status_code == 400
+
+
+@live
+def test_monthly_activity_refuses_an_unknown_leader():
+    """Refused before the month lookup, so no row is written either way."""
+    res = client.put(
+        "/api/programs/leaders/0/monthly-activity",
+        json={"programId": 1, "year": 2026, "month": 7, "remarks": "x"},
+    )
+    assert res.status_code == 404
+
+
+@live
+def test_monthly_activity_refuses_a_month_the_seed_table_lacks():
+    """`party_track.month` stops short of the current month more often than
+    not; the save says so rather than inventing the period. Refuses before
+    the insert, so this writes nothing."""
+    leader_id = db.scalar(
+        f"""SELECT leader_id FROM {config.PARTY_TRACK_DB}.leader
+             WHERE is_deleted = 'N' AND party_id = %s LIMIT 1""",
+        (config.LEADER_PARTY_ID,),
+    )
+    unseeded = db.scalar(
+        f"""SELECT 1 FROM {config.PARTY_TRACK_DB}.month
+             WHERE year = 2099 AND month_no = 12"""
+    )
+    assert unseeded is None, "2099-12 is seeded after all; pick another period"
+    res = client.put(
+        f"/api/programs/leaders/{leader_id}/monthly-activity",
+        json={"programId": 1, "year": 2099, "month": 12, "remarks": "x"},
+    )
+    assert res.status_code == 409
+
+
+def test_monthly_activity_remarks_length_is_capped():
+    """Rejected by the model before any query runs, database or not."""
+    over = "x" * (config.MAX_REMARKS_CHARS + 1)
+    assert client.put(
+        "/api/programs/leaders/1/monthly-activity",
+        json={"programId": 1, "year": 2026, "month": 7, "remarks": over},
+    ).status_code == 422
 
 
 @live
