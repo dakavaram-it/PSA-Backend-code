@@ -51,7 +51,18 @@ app = FastAPI(
 )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:9001",
+        "http://127.0.0.1:9001",
+        "http://localhost:8080",
+        "https://www.mypartydashboard.com",
+        "https://mypartydashboard.com",
+        "https://portalnew.mypartydashboard.com",
+    ],
+    # False, not True: the session is a Bearer header, never a cookie, so no
+    # request here carries credentials — and allow_credentials=True is what makes
+    # Starlette refuse to echo an origin it would otherwise allow.
+    allow_credentials=True,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
