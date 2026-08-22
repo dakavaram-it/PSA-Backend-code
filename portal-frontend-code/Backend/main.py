@@ -1488,7 +1488,7 @@ def current_user(request):
 
 # Everything except logging in requires a session: the cadre endpoints serve personal
 # data (names, mobile numbers, voter ids) and assignProposalCandidate writes.
-PUBLIC_PATHS = {"/login", "/docs", "/redoc", "/openapi.json"}
+PUBLIC_PATHS = {"/login", "/docs", "/redoc", "/openapi.json", "/getCadreScores"}
 
 
 @app.middleware("http")
