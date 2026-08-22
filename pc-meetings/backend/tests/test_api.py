@@ -66,6 +66,9 @@ def test_meeting_split_and_funnel():
     # from `agg` at all — a location with no conducted-status row is outside
     # `pcTotal` the same way a never-scheduled one is outside `units.total`.
     assert m["pc"]["notUpdated"] == 7
+    # Schedule-row total for the card; backup Not Updated is arithmetic.
+    assert m["totalMeetings"] == 9
+    assert m["pc"]["notUpdatedBackup"] == 0  # 9 − 9
 
 
 def test_meeting_includes_pc_remarks_count():
@@ -87,6 +90,7 @@ def test_meeting_with_no_conducted_status_rows_reports_pc_as_none():
          "units": 1, "unitsCompleted": 0, "resolutions": 0, "feedbackTaken": 0},
     )
     assert m["pc"] is None
+    assert m["totalMeetings"] == 0
 
 
 def test_programs_are_still_unwired():
@@ -116,20 +120,23 @@ def test_rollup_totals_match_the_member_count():
 
 
 @live
-def test_schedule_summary_matches_meeting_units_total():
-    """One row per schedule — must foot to the same figure `units.total` sums."""
+def test_schedule_summary_matches_meeting_pc_total():
+    """One row per MCS — must foot to the same figure `pc.total` sums."""
     data = client.get("/api/meetings/18/schedule-summary").json()
     meeting = client.get("/api/meetings/18").json()
-    assert data["total"] == len(data["rows"]) == meeting["units"]["total"]
-    assert sum(r["appConducted"] for r in data["rows"]) == meeting["units"]["completed"]
+    assert meeting["pc"] is not None
+    assert data["total"] == len(data["rows"]) == meeting["pc"]["total"]
+    assert sum(r["pcConducted"] for r in data["rows"]) == meeting["pc"]["conducted"]
 
 
 @live
 def test_schedule_summary_carries_the_remark_fields():
     data = client.get("/api/meetings/18/schedule-summary").json()
-    assert data["rows"], "no schedule rows for meeting 18"
+    assert data["rows"], "no MCS rows for meeting 18"
     row = data["rows"][0]
     assert {"conductedStatusId", "categoryId", "remarks"} <= row.keys()
+    # Every summary row is MCS-backed, so Status Update is always wired.
+    assert row["conductedStatusId"] is not None
 
 
 @live

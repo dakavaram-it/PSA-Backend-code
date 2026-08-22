@@ -54,6 +54,10 @@ def meeting(
     than a flat roster size here, since a plain "roster size minus this
     meeting's own row count" silently undercounts whenever a meeting also
     carries a row outside the roster.
+
+    ``totalMeetings`` is the MCS-row count for this ``meeting_id``
+    (``pcTotal``). ``pc.notUpdated`` stays the roster gap; ``pc.notUpdatedBackup``
+    is the arithmetic fallback ``totalMeetings − (conducted + notConducted)``.
     """
     invitees = num(agg.get("invitees"))
     attendees = num(agg.get("attendees"))
@@ -65,6 +69,8 @@ def meeting(
 
     pc_total = num(agg.get("pcTotal"))
     pc_conducted = num(agg.get("pcConducted"))
+    # MCS row count — same universe PC Status and App & PC Summary use.
+    total_meetings = pc_total
 
     return {
         "id": str(row["id"]),
@@ -100,6 +106,8 @@ def meeting(
         # scheduled", so folding this in would break `total = started +
         # notConducted`, the identity `StateBand` draws the funnel from.
         "notScheduled": not_scheduled,
+        # MCS rows for this meeting_id — shown on the summary row of each card.
+        "totalMeetings": total_meetings,
         # `meeting_conducted_status.is_conducted`: 'Y' is conducted, anything
         # else — NULL, and 'N' on the rare row that carries one — is not, a
         # strict two-state read of the real PC in-charge feed, not the
@@ -115,6 +123,9 @@ def meeting(
             # — the PC-side twin of `notScheduled` above, outside `total` on
             # purpose the same way `notScheduled` sits outside `units.total`.
             "notUpdated": pc_not_updated,
+            # Backup when the roster gap is unavailable: Total Meetings minus
+            # (PC Conducted + PC Not Conducted).
+            "notUpdatedBackup": max(total_meetings - pc_total, 0),
         },
         # Rows in `meeting_remark` carrying real text, joined off the PC
         # in-charge's own conducted-status rows above.

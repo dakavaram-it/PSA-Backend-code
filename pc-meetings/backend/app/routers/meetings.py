@@ -353,15 +353,65 @@ def _ids(meeting_ids: str) -> list[str]:
     return [i for i in meeting_ids.split(",") if i]
 
 
-def _unit_lookup() -> dict[str, dict[str, str]]:
-    """Per unit id: the assembly and parliament its live booth roll sits in —
-    the same (assembly, unit) pairing `/api/units` counts from, scoped to the
-    live roll (`config.UNIT_PUBLICATION_ID`). Fetched once and applied in
-    Python rather than joined per row: `booth` has no index MySQL can use
-    against a per-row join here, the same reason `schedule_summary` builds
-    this map separately instead of joining it inline (see its docstring)."""
+def _unit_lookup(unit_ids: list[str] | None = None) -> dict[str, dict[str, str]]:
+    """Per unit id: code plus the assembly/parliament its live booth roll sits
+    in — the same (assembly, unit) pairing `/api/units` counts from, scoped to
+    the live roll (`config.UNIT_PUBLICATION_ID`).
+
+    Driven off `unit` (PK IN list) rather than scanning `booth` first: Unit
+    App & PC Summary can ask for thousands of ids, and a booth-led DISTINCT
+    was the multi-second cost of opening that panel. Results are chunked so a
+    single giant ``IN`` list does not blow the packet either.
+    """
+    if unit_ids is not None and not unit_ids:
+        return {}
+
+    def _chunk(ids: list[str]) -> dict[str, dict[str, str]]:
+        def _one(part: list[str]) -> dict[str, dict[str, str]]:
+            marks = db.placeholders(part)
+            return {
+                str(r["unit_id"]): {
+                    "code": r["unit_code"] or "",
+                    "assembly": r["assembly_code"] or "",
+                    "parliament": r["parliament_name"] or "",
+                }
+                for r in db.rows(
+                    f"""SELECT UT.id AS unit_id, UT.code AS unit_code,
+                               AC.code AS assembly_code, PC.parliament_name AS parliament_name
+                          FROM unit UT
+                          LEFT JOIN (
+                                SELECT unit_id, MIN(assembly_id) AS assembly_id
+                                  FROM booth
+                                 WHERE publication_id = %s AND unit_id IN ({marks})
+                                 GROUP BY unit_id
+                          ) B ON B.unit_id = UT.id
+                          LEFT JOIN assembly AC ON AC.id = B.assembly_id
+                          LEFT JOIN parliament PC ON PC.id = AC.parliament_id
+                         WHERE UT.id IN ({marks})""",
+                    (config.UNIT_PUBLICATION_ID, *part, *part),
+                )
+            }
+
+        parts = [ids[i : i + 800] for i in range(0, len(ids), 800)]
+        if len(parts) == 1:
+            return _one(parts[0])
+        out: dict[str, dict[str, str]] = {}
+        # Parallel chunks — Unit drills often ask for 2–8k ids; sequential
+        # booth subqueries were the remaining multi-second cost.
+        for chunk in db.parallel(*[ (lambda p=part: _one(p)) for part in parts ]):
+            out.update(chunk)
+        return out
+
+    if unit_ids is not None:
+        return _chunk(list(dict.fromkeys(unit_ids)))
+
+    # Full roll — used by schedule drill-downs that do not know the id set yet.
     return {
-        str(r["unit_id"]): {"assembly": r["assembly_code"] or "", "parliament": r["parliament_name"] or ""}
+        str(r["unit_id"]): {
+            "code": "",
+            "assembly": r["assembly_code"] or "",
+            "parliament": r["parliament_name"] or "",
+        }
         for r in db.rows(
             """SELECT DISTINCT UT.id AS unit_id, AC.code AS assembly_code, PC.parliament_name AS parliament_name
                  FROM booth B
@@ -373,94 +423,169 @@ def _unit_lookup() -> dict[str, dict[str, str]]:
     }
 
 
-def _schedule_rows(meeting_ids: str, condition: str) -> dict[str, Any]:
+def _schedule_rows(
+    meeting_ids: str,
+    condition: str,
+    *,
+    limit: int | None = None,
+    offset: int = 0,
+) -> dict[str, Any]:
     """Row-level `meeting_schedules` detail behind an App-side figure.
 
-    `location`, `assembly` and `parliament` are resolved the same way
-    `/schedule-summary` resolves them for its own rows — unit code (plus its
-    booth-roll assembly/parliament) at Unit level, the schedule's own
-    `assembly_id` (plus its parliament) at Mandal, assembly/parliament name
-    at AC/PC — rather than `location_text`, which is free text entered at
-    schedule time and often blank or stale. `entity_id`'s id space collides
-    across levels (unit 207 and assembly 207 both exist), so which join
-    applies has to follow the meeting's own level, not "whichever join isn't
-    null" — see the fuller note on `schedule_summary`.
+    Lean select (no per-row CAST joins onto unit/assembly/parliament) plus a
+    level-scoped name batch — the CAST fan-out plus a full `_unit_lookup()`
+    was what made App Conducted / Not Conducted lag on Unit meetings.
+
+    `limit`/`offset` page the schedule rows and only resolve place names for
+    that page, so the first paint of a Unit drill can return in ~1s.
     """
     ids = _ids(meeting_ids)
     if not ids:
-        return {"total": 0, "rows": []}
+        return {"total": 0, "rows": [], "limit": limit, "offset": offset}
     marks = db.placeholders(ids)
+    total = db.rows(
+        f"""SELECT COUNT(*) AS c FROM meeting_schedules s
+             WHERE s.meeting_id IN ({marks}) AND {condition}""",
+        tuple(ids),
+    )[0]["c"]
+    if not total:
+        return {"total": 0, "rows": [], "limit": limit, "offset": offset}
+
+    args: list[Any] = list(ids)
+    lim_sql = ""
+    if limit is not None:
+        lim_sql = " LIMIT %s OFFSET %s"
+        args.extend([max(0, int(limit)), max(0, int(offset))])
+
     rows = db.rows(
         f"""SELECT s.id, s.meeting_id, s.entity_id, s.location_text, s.meeting_time,
-                   ml.level_name,
-                   u.code AS unit_code,
-                   ae.name AS assembly_name, aep.parliament_name AS assembly_parliament_name,
-                   pe.parliament_name AS entity_parliament_name,
-                   ma.name AS mandal_assembly_name, map.parliament_name AS mandal_parliament_name,
-                   md.name AS mandal_name, tn.town_name
+                   s.assembly_id, ml.level_name, r.code AS role_code
               FROM meeting_schedules s
               JOIN meetings mt ON mt.id = s.meeting_id
               LEFT JOIN meeting_levels ml ON ml.id = mt.meeting_level_id
-              LEFT JOIN unit u ON u.id = CAST(s.entity_id AS CHAR)
-              LEFT JOIN assembly ae ON ae.id = CAST(s.entity_id AS CHAR)
-              LEFT JOIN parliament aep ON aep.id = ae.parliament_id
-              LEFT JOIN parliament pe ON pe.id = CAST(s.entity_id AS CHAR)
-              LEFT JOIN mandal md ON md.id = CAST(s.entity_id AS CHAR)
-              LEFT JOIN town tn ON tn.id = CAST(s.entity_id AS CHAR)
-              LEFT JOIN assembly ma ON ma.id = CAST(s.assembly_id AS CHAR)
-              LEFT JOIN parliament map ON map.id = ma.parliament_id
+              LEFT JOIN role r ON r.id = s.role_id
              WHERE s.meeting_id IN ({marks}) AND {condition}
-             ORDER BY s.meeting_id, s.id""",
-        tuple(ids),
+             ORDER BY s.meeting_id, s.id{lim_sql}""",
+        tuple(args),
     )
+    if not rows:
+        return {"total": total, "rows": [], "limit": limit, "offset": offset}
 
+    levels = {adapt.level_code(r["level_name"]) for r in rows}
+    unit_lookup: dict[str, dict[str, str]] = {}
+    assembly_names: dict[str, str] = {}
+    ac_parliament: dict[str, str] = {}
+    parliament_names: dict[str, str] = {}
     mandal_locations: dict[str, str] = {}
-    if any(adapt.level_code(r["level_name"]) == "Mandal" for r in rows):
+    mandal_assembly: dict[str, str] = {}
+    mandal_parliament: dict[str, str] = {}
+
+    if "Unit" in levels:
+        entity_ids = [
+            str(r["entity_id"]) for r in rows
+            if adapt.level_code(r["level_name"]) == "Unit" and r["entity_id"] is not None
+        ]
+        unit_lookup = _unit_lookup(entity_ids)
+    if "AC" in levels:
+        ac_ids = [
+            str(r["entity_id"]) for r in rows
+            if adapt.level_code(r["level_name"]) == "AC" and r["entity_id"] is not None
+        ]
+        if ac_ids:
+            for r in db.rows(
+                f"""SELECT a.id, a.name, p.parliament_name
+                      FROM assembly a
+                      LEFT JOIN parliament p ON p.id = a.parliament_id
+                     WHERE a.id IN ({db.placeholders(ac_ids)})""",
+                tuple(dict.fromkeys(ac_ids)),
+            ):
+                assembly_names[str(r["id"])] = r["name"] or ""
+                ac_parliament[str(r["id"])] = r["parliament_name"] or ""
+    if "PC" in levels:
+        pc_ids = [
+            str(r["entity_id"]) for r in rows
+            if adapt.level_code(r["level_name"]) == "PC" and r["entity_id"] is not None
+        ]
+        if pc_ids:
+            for r in db.rows(
+                f"SELECT id, parliament_name FROM parliament WHERE id IN ({db.placeholders(pc_ids)})",
+                tuple(dict.fromkeys(pc_ids)),
+            ):
+                parliament_names[str(r["id"])] = r["parliament_name"] or ""
+    if "Mandal" in levels:
         mandal_locations = {
             str(r["location_id"]): r["location_name"] or ""
             for r in db.rows(_COMMITTEE_LOCATIONS)
             if r["location_id"] is not None
         }
-
-    unit_lookup: dict[str, dict[str, str]] = {}
-    if any(adapt.level_code(r["level_name"]) == "Unit" for r in rows):
-        unit_lookup = _unit_lookup()
+        mandal_ids = [
+            str(r["entity_id"]) for r in rows
+            if adapt.level_code(r["level_name"]) == "Mandal" and r["entity_id"] is not None
+        ]
+        if mandal_ids:
+            uniq = list(dict.fromkeys(mandal_ids))
+            for r in db.rows(
+                f"SELECT id, name FROM mandal WHERE id IN ({db.placeholders(uniq)})",
+                tuple(uniq),
+            ):
+                mandal_locations.setdefault(str(r["id"]), r["name"] or "")
+            for r in db.rows(
+                f"SELECT id, town_name FROM town WHERE id IN ({db.placeholders(uniq)})",
+                tuple(uniq),
+            ):
+                mandal_locations.setdefault(str(r["id"]), r["town_name"] or "")
+        ac_ids = list({
+            str(r["assembly_id"]) for r in rows
+            if adapt.level_code(r["level_name"]) == "Mandal" and r["assembly_id"] is not None
+        })
+        if ac_ids:
+            for r in db.rows(
+                f"""SELECT a.id, a.name, p.parliament_name
+                      FROM assembly a
+                      LEFT JOIN parliament p ON p.id = a.parliament_id
+                     WHERE a.id IN ({db.placeholders(ac_ids)})""",
+                tuple(ac_ids),
+            ):
+                mandal_assembly[str(r["id"])] = r["name"] or ""
+                mandal_parliament[str(r["id"])] = r["parliament_name"] or ""
 
     def _fields(r: dict[str, Any]) -> dict[str, str]:
         level = adapt.level_code(r["level_name"])
+        loc = str(r["entity_id"]) if r["entity_id"] is not None else ""
         if level == "PC":
             return {
-                "location": r["entity_parliament_name"] or r["location_text"] or "",
+                "location": parliament_names.get(loc) or r["location_text"] or "",
                 "assembly": "", "parliament": "",
             }
         if level == "AC":
             return {
-                "location": r["assembly_name"] or r["location_text"] or "",
-                "assembly": "", "parliament": r["assembly_parliament_name"] or "",
+                "location": assembly_names.get(loc) or r["location_text"] or "",
+                "assembly": "", "parliament": ac_parliament.get(loc, ""),
             }
         if level == "Mandal":
+            ac = str(r["assembly_id"]) if r["assembly_id"] is not None else ""
             return {
-                "location": (
-                    mandal_locations.get(str(r["entity_id"]))
-                    or r["mandal_name"] or r["town_name"] or r["location_text"] or ""
-                ),
-                "assembly": r["mandal_assembly_name"] or "",
-                "parliament": r["mandal_parliament_name"] or "",
+                "location": mandal_locations.get(loc) or r["location_text"] or "",
+                "assembly": mandal_assembly.get(ac, ""),
+                "parliament": mandal_parliament.get(ac, ""),
             }
-        info = unit_lookup.get(str(r["entity_id"]), {})
+        info = unit_lookup.get(loc, {})
         return {
-            "location": r["unit_code"] or r["location_text"] or "",
+            "location": info.get("code") or r["location_text"] or "",
             "assembly": info.get("assembly", ""),
             "parliament": info.get("parliament", ""),
         }
 
     return {
-        "total": len(rows),
+        "total": total,
+        "limit": limit,
+        "offset": offset,
         "rows": [
             {
                 "id": r["id"],
                 "meetingId": str(r["meeting_id"]),
                 "time": r["meeting_time"] or "",
+                "role": r["role_code"] or "",
                 **_fields(r),
             }
             for r in rows
@@ -468,86 +593,124 @@ def _schedule_rows(meeting_ids: str, condition: str) -> dict[str, Any]:
     }
 
 
-def _conducted_status_rows(meeting_ids: str, condition: str) -> dict[str, Any]:
+def _conducted_status_rows(
+    meeting_ids: str,
+    condition: str,
+    *,
+    limit: int | None = None,
+    offset: int = 0,
+) -> dict[str, Any]:
     """Row-level `meeting_conducted_status` detail behind a PC-side figure.
 
-    `location`, `assembly` and `parliament` are resolved the same rich way
-    the App-side `_schedule_rows` resolves them — unit code (plus its
-    booth-roll assembly/parliament) at Unit level, assembly/parliament name
-    at AC/PC — joined straight off `location_id`, which (confirmed by
-    `_PC_ROSTER_JOINS`, used for the Not Updated count) needs no cast the
-    way `meeting_schedules.entity_id` does.
-
-    Mandal is the exception: unlike `meeting_schedules`, this table carries
-    no `assembly_id` column of its own, so there is no row-level path to a
-    mandal's assembly/parliament here — only the enrolled committee roster's
-    own location name (`_COMMITTEE_LOCATIONS`), the same source
-    `_schedule_rows` prefers for its Mandal `location`. Assembly/parliament
-    are left blank there rather than guessed, same reasoning as
-    `_level_roster`'s Mandal branch.
+    Lean select + level-scoped name batches (same shape as `_schedule_rows`).
+    `limit`/`offset` page MCS rows and only resolve place names for that page.
     """
     ids = _ids(meeting_ids)
     if not ids:
-        return {"total": 0, "rows": []}
+        return {"total": 0, "rows": [], "limit": limit, "offset": offset}
     marks = db.placeholders(ids)
+    total = db.rows(
+        f"""SELECT COUNT(*) AS c FROM meeting_conducted_status mcs
+             WHERE mcs.meeting_id IN ({marks}) AND {condition}""",
+        tuple(ids),
+    )[0]["c"]
+    if not total:
+        return {"total": 0, "rows": [], "limit": limit, "offset": offset}
+
+    args: list[Any] = list(ids)
+    lim_sql = ""
+    if limit is not None:
+        lim_sql = " LIMIT %s OFFSET %s"
+        args.extend([max(0, int(limit)), max(0, int(offset))])
+
     rows = db.rows(
         f"""SELECT mcs.meeting_conducted_status_id AS id, mcs.meeting_id, mcs.location_id,
-                   ml.level_name,
-                   r.code AS role_code,
-                   u.code AS unit_code,
-                   ae.name AS assembly_name, aep.parliament_name AS assembly_parliament_name,
-                   pe.parliament_name AS entity_parliament_name
+                   ml.level_name, r.code AS role_code
               FROM meeting_conducted_status mcs
               JOIN meetings mt ON mt.id = mcs.meeting_id
               LEFT JOIN meeting_levels ml ON ml.id = mt.meeting_level_id
               LEFT JOIN role r ON r.id = mcs.role_id
-              LEFT JOIN unit u ON u.id = mcs.location_id
-              LEFT JOIN assembly ae ON ae.id = mcs.location_id
-              LEFT JOIN parliament aep ON aep.id = ae.parliament_id
-              LEFT JOIN parliament pe ON pe.id = mcs.location_id
              WHERE mcs.meeting_id IN ({marks}) AND {condition}
-             ORDER BY mcs.meeting_id, mcs.meeting_conducted_status_id""",
-        tuple(ids),
+             ORDER BY mcs.meeting_id, mcs.meeting_conducted_status_id{lim_sql}""",
+        tuple(args),
     )
+    if not rows:
+        return {"total": total, "rows": [], "limit": limit, "offset": offset}
 
+    levels = {adapt.level_code(r["level_name"]) for r in rows}
+    unit_lookup: dict[str, dict[str, str]] = {}
+    assembly_names: dict[str, str] = {}
+    ac_parliament: dict[str, str] = {}
+    parliament_names: dict[str, str] = {}
     mandal_locations: dict[str, str] = {}
-    if any(adapt.level_code(r["level_name"]) == "Mandal" for r in rows):
+
+    if "Unit" in levels:
+        unit_lookup = _unit_lookup([
+            str(r["location_id"]) for r in rows
+            if adapt.level_code(r["level_name"]) == "Unit" and r["location_id"] is not None
+        ])
+    if "AC" in levels:
+        ac_ids = [
+            str(r["location_id"]) for r in rows
+            if adapt.level_code(r["level_name"]) == "AC" and r["location_id"] is not None
+        ]
+        if ac_ids:
+            for r in db.rows(
+                f"""SELECT a.id, a.name, p.parliament_name
+                      FROM assembly a
+                      LEFT JOIN parliament p ON p.id = a.parliament_id
+                     WHERE a.id IN ({db.placeholders(ac_ids)})""",
+                tuple(dict.fromkeys(ac_ids)),
+            ):
+                assembly_names[str(r["id"])] = r["name"] or ""
+                ac_parliament[str(r["id"])] = r["parliament_name"] or ""
+    if "PC" in levels:
+        pc_ids = [
+            str(r["location_id"]) for r in rows
+            if adapt.level_code(r["level_name"]) == "PC" and r["location_id"] is not None
+        ]
+        if pc_ids:
+            for r in db.rows(
+                f"SELECT id, parliament_name FROM parliament WHERE id IN ({db.placeholders(pc_ids)})",
+                tuple(dict.fromkeys(pc_ids)),
+            ):
+                parliament_names[str(r["id"])] = r["parliament_name"] or ""
+    if "Mandal" in levels:
         mandal_locations = {
             str(r["location_id"]): r["location_name"] or ""
             for r in db.rows(_COMMITTEE_LOCATIONS)
             if r["location_id"] is not None
         }
 
-    unit_lookup: dict[str, dict[str, str]] = {}
-    if any(adapt.level_code(r["level_name"]) == "Unit" for r in rows):
-        unit_lookup = _unit_lookup()
-
     def _fields(r: dict[str, Any]) -> dict[str, str]:
         level = adapt.level_code(r["level_name"])
+        loc = str(r["location_id"]) if r["location_id"] is not None else ""
         if level == "PC":
             return {
-                "location": r["entity_parliament_name"] or r["location_id"] or "",
+                "location": parliament_names.get(loc) or loc,
                 "assembly": "", "parliament": "",
             }
         if level == "AC":
             return {
-                "location": r["assembly_name"] or r["location_id"] or "",
-                "assembly": "", "parliament": r["assembly_parliament_name"] or "",
+                "location": assembly_names.get(loc) or loc,
+                "assembly": "", "parliament": ac_parliament.get(loc, ""),
             }
         if level == "Mandal":
             return {
-                "location": mandal_locations.get(str(r["location_id"])) or r["location_id"] or "",
+                "location": mandal_locations.get(loc) or loc,
                 "assembly": "", "parliament": "",
             }
-        info = unit_lookup.get(str(r["location_id"]), {})
+        info = unit_lookup.get(loc, {})
         return {
-            "location": r["unit_code"] or r["location_id"] or "",
+            "location": info.get("code") or loc,
             "assembly": info.get("assembly", ""),
             "parliament": info.get("parliament", ""),
         }
 
     return {
-        "total": len(rows),
+        "total": total,
+        "limit": limit,
+        "offset": offset,
         "rows": [
             {
                 "id": r["id"],
@@ -563,17 +726,21 @@ def _conducted_status_rows(meeting_ids: str, condition: str) -> dict[str, Any]:
 @router.get("/schedules/conducted")
 def conducted_schedules(
     meeting_ids: str = Query(..., description="Comma-separated meeting ids"),
+    limit: int | None = Query(None, ge=1, le=5000),
+    offset: int = Query(0, ge=0),
 ) -> dict[str, Any]:
     """`status IN (1, 2)` — the same rows `units.completed` sums per meeting."""
-    return _schedule_rows(meeting_ids, "s.status IN (1, 2)")
+    return _schedule_rows(meeting_ids, "s.status IN (1, 2)", limit=limit, offset=offset)
 
 
 @router.get("/schedules/not-updated")
 def not_updated_schedules(
     meeting_ids: str = Query(..., description="Comma-separated meeting ids"),
+    limit: int | None = Query(None, ge=1, le=5000),
+    offset: int = Query(0, ge=0),
 ) -> dict[str, Any]:
     """`status = 0` — the same rows `units.notConducted` sums per meeting."""
-    return _schedule_rows(meeting_ids, "s.status = 0")
+    return _schedule_rows(meeting_ids, "s.status = 0", limit=limit, offset=offset)
 
 
 def _level_roster(level: str) -> list[tuple[str, str, str, str]]:
@@ -594,20 +761,22 @@ def _level_roster(level: str) -> list[tuple[str, str, str, str]]:
     it — so it's left blank rather than shown and risk being wrong.
     """
     if level == "Unit":
-        lookup = _unit_lookup()
+        unit_rows = db.rows(
+            """SELECT DISTINCT UT.id AS unit_id, UT.code AS unit_code
+                 FROM booth B
+                 JOIN unit UT ON B.unit_id = UT.id
+                WHERE B.publication_id = %s""",
+            (config.UNIT_PUBLICATION_ID,),
+        )
+        lookup = _unit_lookup([str(r["unit_id"]) for r in unit_rows])
         return [
             (
-                str(r["unit_id"]), r["unit_code"] or "",
+                str(r["unit_id"]),
+                lookup.get(str(r["unit_id"]), {}).get("code") or r["unit_code"] or "",
                 lookup.get(str(r["unit_id"]), {}).get("assembly", ""),
                 lookup.get(str(r["unit_id"]), {}).get("parliament", ""),
             )
-            for r in db.rows(
-                """SELECT DISTINCT UT.id AS unit_id, UT.code AS unit_code
-                     FROM booth B
-                     JOIN unit UT ON B.unit_id = UT.id
-                    WHERE B.publication_id = %s""",
-                (config.UNIT_PUBLICATION_ID,),
-            )
+            for r in unit_rows
         ]
     if level == "Mandal":
         return [
@@ -635,6 +804,8 @@ def _level_roster(level: str) -> list[tuple[str, str, str, str]]:
 @router.get("/schedules/not-scheduled")
 def not_scheduled_schedules(
     meeting_ids: str = Query(..., description="Comma-separated meeting ids"),
+    limit: int | None = Query(None, ge=1, le=5000),
+    offset: int = Query(0, ge=0),
 ) -> dict[str, Any]:
     """Roster locations with no `meeting_schedules` row at all for a meeting —
     the same figure `notScheduled` sums per meeting, drilled down to rows.
@@ -643,10 +814,13 @@ def not_scheduled_schedules(
     row to select — a location that was never scheduled has no row to find.
     It's built the other way round instead: the level's full roster, minus
     whichever of those ids this meeting's `entity_id`s do cover.
+
+    Unit: assembly/parliament are resolved only for the *page* of gap ids —
+    looking up the entire live roll was the multi-second cost of App Not Updated.
     """
     ids = _ids(meeting_ids)
     if not ids:
-        return {"total": 0, "rows": []}
+        return {"total": 0, "rows": [], "limit": limit, "offset": offset}
     marks = db.placeholders(ids)
     meeting_rows = db.rows(
         f"""SELECT m.id, l.level_name
@@ -664,35 +838,69 @@ def not_scheduled_schedules(
         scheduled_by_meeting.setdefault(str(r["meeting_id"]), set()).add(str(r["entity_id"]))
 
     roster_cache: dict[str, list[tuple[str, str, str, str]]] = {}
-    out_rows: list[dict[str, Any]] = []
+    unit_roll: list[tuple[str, str]] | None = None
+    all_rows: list[dict[str, Any]] = []
     for mrow in meeting_rows:
         mid = str(mrow["id"])
         level = adapt.level_code(mrow["level_name"])
+        scheduled_ids = scheduled_by_meeting.get(mid, set())
+        if level == "Unit":
+            if unit_roll is None:
+                unit_roll = [
+                    (str(r["unit_id"]), r["unit_code"] or "")
+                    for r in db.rows(
+                        """SELECT DISTINCT UT.id AS unit_id, UT.code AS unit_code
+                             FROM booth B
+                             JOIN unit UT ON B.unit_id = UT.id
+                            WHERE B.publication_id = %s""",
+                        (config.UNIT_PUBLICATION_ID,),
+                    )
+                ]
+            all_rows.extend(
+                {"meetingId": mid, "location": code, "assembly": "", "parliament": "", "_uid": uid}
+                for uid, code in unit_roll
+                if uid not in scheduled_ids
+            )
+            continue
         if level not in roster_cache:
             roster_cache[level] = _level_roster(level)
-        scheduled_ids = scheduled_by_meeting.get(mid, set())
-        out_rows.extend(
+        all_rows.extend(
             {"meetingId": mid, "location": name, "assembly": assembly, "parliament": parliament}
             for loc_id, name, assembly, parliament in roster_cache[level]
             if loc_id not in scheduled_ids
         )
-    return {"total": len(out_rows), "rows": out_rows}
+
+    total = len(all_rows)
+    page = all_rows[offset: offset + limit] if limit is not None else all_rows[offset:]
+    unit_page = [r for r in page if "_uid" in r]
+    if unit_page:
+        lookup = _unit_lookup([r["_uid"] for r in unit_page])
+        for r in unit_page:
+            info = lookup.get(r["_uid"], {})
+            r["location"] = info.get("code") or r["location"]
+            r["assembly"] = info.get("assembly", "")
+            r["parliament"] = info.get("parliament", "")
+            del r["_uid"]
+    for r in page:
+        r.pop("_uid", None)
+    return {"total": total, "limit": limit, "offset": offset, "rows": page}
 
 
 @router.get("/schedules/pc-never-updated")
 def pc_never_updated_schedules(
     meeting_ids: str = Query(..., description="Comma-separated meeting ids"),
+    limit: int | None = Query(None, ge=1, le=5000),
+    offset: int = Query(0, ge=0),
 ) -> dict[str, Any]:
     """Roster locations with no `meeting_conducted_status` row at all for a
     meeting — the same figure PC Status' `notUpdated` sums per meeting,
-    drilled down to rows. The PC-side twin of `/schedules/not-scheduled`:
-    same roster (`_level_roster` is shared with it), just covered-ids read
-    off `meeting_conducted_status.location_id` instead of
-    `meeting_schedules.entity_id`.
+    drilled down to rows. The PC-side twin of `/schedules/not-scheduled`.
+
+    Unit gap rows only run `_unit_lookup` on the requested page of missing ids.
     """
     ids = _ids(meeting_ids)
     if not ids:
-        return {"total": 0, "rows": []}
+        return {"total": 0, "rows": [], "limit": limit, "offset": offset}
     marks = db.placeholders(ids)
     meeting_rows = db.rows(
         f"""SELECT m.id, l.level_name
@@ -710,44 +918,85 @@ def pc_never_updated_schedules(
         covered_by_meeting.setdefault(str(r["meeting_id"]), set()).add(str(r["location_id"]))
 
     roster_cache: dict[str, list[tuple[str, str, str, str]]] = {}
-    out_rows: list[dict[str, Any]] = []
+    unit_roll: list[tuple[str, str]] | None = None
+    all_rows: list[dict[str, Any]] = []
     for mrow in meeting_rows:
         mid = str(mrow["id"])
         level = adapt.level_code(mrow["level_name"])
+        covered_ids = covered_by_meeting.get(mid, set())
+        if level == "Unit":
+            if unit_roll is None:
+                unit_roll = [
+                    (str(r["unit_id"]), r["unit_code"] or "")
+                    for r in db.rows(
+                        """SELECT DISTINCT UT.id AS unit_id, UT.code AS unit_code
+                             FROM booth B
+                             JOIN unit UT ON B.unit_id = UT.id
+                            WHERE B.publication_id = %s""",
+                        (config.UNIT_PUBLICATION_ID,),
+                    )
+                ]
+            all_rows.extend(
+                {"meetingId": mid, "location": code, "assembly": "", "parliament": "", "_uid": uid}
+                for uid, code in unit_roll
+                if uid not in covered_ids
+            )
+            continue
         if level not in roster_cache:
             roster_cache[level] = _level_roster(level)
-        covered_ids = covered_by_meeting.get(mid, set())
-        out_rows.extend(
+        all_rows.extend(
             {"meetingId": mid, "location": name, "assembly": assembly, "parliament": parliament}
             for loc_id, name, assembly, parliament in roster_cache[level]
             if loc_id not in covered_ids
         )
-    return {"total": len(out_rows), "rows": out_rows}
+
+    total = len(all_rows)
+    page = all_rows[offset: offset + limit] if limit is not None else all_rows[offset:]
+    unit_page = [r for r in page if "_uid" in r]
+    if unit_page:
+        lookup = _unit_lookup([r["_uid"] for r in unit_page])
+        for r in unit_page:
+            info = lookup.get(r["_uid"], {})
+            r["location"] = info.get("code") or r["location"]
+            r["assembly"] = info.get("assembly", "")
+            r["parliament"] = info.get("parliament", "")
+            del r["_uid"]
+    for r in page:
+        r.pop("_uid", None)
+    return {"total": total, "limit": limit, "offset": offset, "rows": page}
 
 
 @router.get("/schedules/pc-completed")
 def pc_completed_schedules(
     meeting_ids: str = Query(..., description="Comma-separated meeting ids"),
+    limit: int | None = Query(None, ge=1, le=5000),
+    offset: int = Query(0, ge=0),
 ) -> dict[str, Any]:
     """`is_conducted = 'Y'` — the same rows PC Status' Completed sums."""
-    return _conducted_status_rows(meeting_ids, "is_conducted = 'Y'")
+    return _conducted_status_rows(meeting_ids, "is_conducted = 'Y'", limit=limit, offset=offset)
 
 
 @router.get("/schedules/pc-not-completed")
 def pc_not_completed_schedules(
     meeting_ids: str = Query(..., description="Comma-separated meeting ids"),
+    limit: int | None = Query(None, ge=1, le=5000),
+    offset: int = Query(0, ge=0),
 ) -> dict[str, Any]:
-    """`is_conducted IS NULL OR 'N'` — PC Status' Not completed, the combined
+    """`is_conducted IS NULL OR 'N'` — PC Status' Not conducted, the combined
     figure. Broader than `/pc-not-updated`, which is NULL alone."""
-    return _conducted_status_rows(meeting_ids, "is_conducted IS NULL OR is_conducted = 'N'")
+    return _conducted_status_rows(
+        meeting_ids, "is_conducted IS NULL OR is_conducted = 'N'", limit=limit, offset=offset
+    )
 
 
 @router.get("/schedules/pc-not-updated")
 def pc_not_updated_schedules(
     meeting_ids: str = Query(..., description="Comma-separated meeting ids"),
+    limit: int | None = Query(None, ge=1, le=5000),
+    offset: int = Query(0, ge=0),
 ) -> dict[str, Any]:
     """`is_conducted IS NULL` — never touched, kept apart from an explicit 'N'."""
-    return _conducted_status_rows(meeting_ids, "is_conducted IS NULL")
+    return _conducted_status_rows(meeting_ids, "is_conducted IS NULL", limit=limit, offset=offset)
 
 
 def _remark_rows(meeting_ids: str) -> dict[str, Any]:
@@ -797,148 +1046,208 @@ def pc_remarks_schedules(
 
 
 @router.get("/{meeting_id}/schedule-summary")
-def schedule_summary(meeting_id: str) -> dict[str, Any]:
-    """The App & PC summary panel's real row detail — one row per schedule.
+def schedule_summary(
+    meeting_id: str,
+    limit: int | None = Query(None, ge=1, le=5000, description="Page size; omit for all rows"),
+    offset: int = Query(0, ge=0),
+) -> dict[str, Any]:
+    """The App & PC summary panel — one row per `meeting_conducted_status`.
 
-    `meeting_schedules.entity_id` and `meeting_conducted_status.location_id`
-    are the same id: confirmed 1:1 for meeting 22's 2,860 rows, so the join
-    carries no fan-out. A location with no matching row there reads as not
-    completed, the same as an explicit NULL — there is nothing to mark it
-    complete with either way. `meeting_remark` carries at most one row per
-    `meeting_conducted_status_id` — the save endpoint updates in place rather
-    than versioning — so the join to it is 1:1 too.
-
-    `entity_id` is a `unit.id` at Unit level, an `assembly.id` at AC level, a
-    `parliament.id` at PC level, and a `mandal.id` or `town.id` at Mandal
-    level — the id spaces overlap (assembly 207 and unit 207 both exist), so
-    which table it resolves against has to follow the meeting's own level
-    rather than "whichever join isn't null". Blindly joining `unit` for every
-    row, as this used to, silently matched AC-, PC- and Mandal-level rows
-    against an unrelated unit and showed its code as the location — a mandal
-    committee is its own thing, not the `unit` rows nested inside it, so
-    `mandal`/`town` (the two don't collide with each other) resolve it now.
-
-    `entity_id`/`assembly_id` are `int`/`bigint`; every table above (plus
-    `meeting_conducted_status.location_id`) keys off a `varchar` id. Left as
-    `x.id = s.entity_id`, MySQL casts the varchar side to compare, which
-    can't use that column's index — a full table scan per schedule row, for
-    every one of these joins. The cast goes on the `meeting_schedules` side
-    instead (same fix as the invitee/attendance join elsewhere in this file)
-    so each target table's own primary key still does the work.
-
-    The panel doesn't send a per-row `assembly`/`parliament` for the tier the
-    caller already knows it's looking at — the meeting's own level is the
-    tier the user picked to get here, so a PC-level row carries neither (it
-    IS a parliament) and an AC-level row carries no `assembly` (it IS one) —
-    only `parliament`, which parliament that assembly sits in. Mandal and
-    Unit rows carry both, since neither is redundant with the row's own
-    `location`. The Mandal ones come off `s.assembly_id`, the schedule's own
-    column, not off `entity_id` — `entity_id`'s id space collides with
-    `assembly.id` too (mandal 141 and assembly 141 both exist), so it can't
-    be trusted to resolve the AC on its own the way it resolves the unit.
-    `unit` carries no `assembly_id` of its own that's safe to trust either,
-    so the Unit ones go through `booth` via `_unit_lookup()` — the same
-    (assembly, unit) pairing `/api/units` already counts from, scoped to the
-    live roll (`config.UNIT_PUBLICATION_ID`), plus that assembly's own
-    `parliament_id`. That map is fetched once as its own query and applied
-    in Python rather than joined per row: `booth` has no index MySQL can use
-    against a `DISTINCT` subquery, so joining it turned into a nested scan of
-    ~46k booth rows for every one of a meeting's schedule rows and never
-    finished.
-
-    At Mandal level, `location` prefers the enrolled committee roster behind
-    `/api/committees/mandal-town-division` (the "Mandal / Town / Division
-    Level · Total" card) over `mandal`/`town`: those two mytdp tables only
-    cover 84% of this tier's schedule rows, while the roster — filtered the
-    same way the Total card is (`tdp_committee_enrollment_id = 4`, levels
-    5/7/9, `tdp_basic_committee_id = 1`) — covers 99.75% and, within that
-    filtered set, never has two different committees sharing one location id
-    (checked directly; the *unfiltered* `tehsil`/`local_election_body`
-    tables do collide, which is why this endpoint doesn't query them
-    unfiltered). `mandal`/`town` remain the fallback for the handful of rows
-    the roster doesn't cover.
+    MCS is primary. Schedules are fetched separately and merged in Python
+    (a SQL CAST join on Unit-scale row counts times out). Unit name resolution
+    drives off `unit` + a scoped booth subquery, chunked — not a full booth
+    scan. Pass ``limit``/``offset`` so the UI can paint the first page while
+    the rest loads (Unit meetings run to ~8k rows).
     """
-    rows = db.rows(
-        """SELECT s.id, s.entity_id, ml.level_name, s.location_text,
-                  u.id AS unit_id, u.code AS unit_code, ae.name AS entity_assembly_name,
-                  pe.parliament_name AS entity_parliament_name,
-                  pac.parliament_name AS ac_parliament_name,
-                  ma.name AS mandal_assembly_name, map.parliament_name AS mandal_parliament_name,
-                  md.name AS mandal_name, tn.town_name,
-                  s.status, s.updated_at, c.is_conducted,
-                  c.meeting_conducted_status_id, mr.remarks_category_id, mr.remarks
-             FROM meeting_schedules s
-             JOIN meetings mt ON mt.id = s.meeting_id
-             LEFT JOIN meeting_levels ml ON ml.id = mt.meeting_level_id
-             LEFT JOIN unit u ON u.id = CAST(s.entity_id AS CHAR)
-             LEFT JOIN assembly ae ON ae.id = CAST(s.entity_id AS CHAR)
-             LEFT JOIN parliament pe ON pe.id = CAST(s.entity_id AS CHAR)
-             LEFT JOIN parliament pac ON pac.id = ae.parliament_id
-             LEFT JOIN assembly ma ON ma.id = CAST(s.assembly_id AS CHAR)
-             LEFT JOIN parliament map ON map.id = ma.parliament_id
-             LEFT JOIN mandal md ON md.id = CAST(s.entity_id AS CHAR)
-             LEFT JOIN town tn ON tn.id = CAST(s.entity_id AS CHAR)
-             LEFT JOIN meeting_conducted_status c
-                    ON c.meeting_id = s.meeting_id AND c.location_id = CAST(s.entity_id AS CHAR)
-             LEFT JOIN meeting_remark mr
-                    ON mr.meeting_conducted_status_id = c.meeting_conducted_status_id
-            WHERE s.meeting_id = %s
-            ORDER BY s.id""",
+    # Cheap level peek so Unit can take the fast path before loading names.
+    meta = db.one(
+        """SELECT l.level_name
+             FROM meetings m
+             LEFT JOIN meeting_levels l ON l.id = m.meeting_level_id
+            WHERE m.id = %s""",
         (meeting_id,),
     )
+    if meta is None:
+        raise HTTPException(status_code=404, detail="Unknown meeting")
+    level = adapt.level_code(meta["level_name"])
 
-    unit_lookup: dict[str, dict[str, str]] = {}
-    if any(adapt.level_code(r["level_name"]) == "Unit" for r in rows):
-        unit_lookup = _unit_lookup()
+    def _mcs() -> list[dict[str, Any]]:
+        sql = """SELECT c.meeting_conducted_status_id AS id, c.location_id,
+                        c.is_conducted, mr.remarks_category_id, mr.remarks
+                   FROM meeting_conducted_status c
+                   LEFT JOIN meeting_remark mr
+                          ON mr.meeting_conducted_status_id = c.meeting_conducted_status_id
+                  WHERE c.meeting_id = %s
+                  ORDER BY c.meeting_conducted_status_id"""
+        args: list[Any] = [meeting_id]
+        if limit is not None:
+            sql += " LIMIT %s OFFSET %s"
+            args.extend([limit, offset])
+        return db.rows(sql, tuple(args))
 
+    def _total() -> int:
+        return int(
+            db.scalar(
+                "SELECT COUNT(*) FROM meeting_conducted_status WHERE meeting_id = %s",
+                (meeting_id,),
+            )
+            or 0
+        )
+
+    def _schedules_for(ids: list[str]) -> dict[str, dict[str, Any]]:
+        """Schedules for this page's locations only — indexed `entity_id IN`,
+        not a full-meeting scan (that was ~2s on every Unit page)."""
+        if not ids:
+            return {}
+        nums: list[int] = []
+        for x in ids:
+            try:
+                nums.append(int(x))
+            except (TypeError, ValueError):
+                continue
+        if not nums:
+            return {}
+        out: dict[str, dict[str, Any]] = {}
+        for i in range(0, len(nums), 800):
+            part = nums[i : i + 800]
+            for s in db.rows(
+                f"""SELECT entity_id, status, location_text, assembly_id
+                      FROM meeting_schedules
+                     WHERE meeting_id = %s AND entity_id IN ({db.placeholders(part)})""",
+                (meeting_id, *part),
+            ):
+                if s["entity_id"] is not None:
+                    out[str(s["entity_id"])] = s
+        return out
+
+    def _schedules_all() -> dict[str, dict[str, Any]]:
+        return {
+            str(s["entity_id"]): s
+            for s in db.rows(
+                """SELECT entity_id, status, location_text, assembly_id
+                     FROM meeting_schedules WHERE meeting_id = %s""",
+                (meeting_id,),
+            )
+            if s["entity_id"] is not None
+        }
+
+    if limit is not None:
+        rows, total = db.parallel(_mcs, _total)
+    else:
+        rows = _mcs()
+        total = len(rows)
+
+    if not rows and offset == 0:
+        return {"total": 0, "rows": []}
+
+    loc_ids = list({str(r["location_id"]) for r in rows if r["location_id"] is not None})
+
+    # Page-scoped schedule + name lookups run together after we know loc_ids.
+    if level == "Unit" and loc_ids:
+        schedules, unit_lookup = db.parallel(
+            lambda: _schedules_for(loc_ids),
+            lambda: _unit_lookup(loc_ids),
+        )
+    elif limit is not None:
+        schedules = _schedules_for(loc_ids)
+        unit_lookup = {}
+    else:
+        schedules = _schedules_all()
+        unit_lookup = {}
+
+    assembly_names: dict[str, str] = {}
+    ac_parliament: dict[str, str] = {}
+    parliament_names: dict[str, str] = {}
     mandal_locations: dict[str, str] = {}
-    if any(adapt.level_code(r["level_name"]) == "Mandal" for r in rows):
+    mandal_assembly: dict[str, str] = {}
+    mandal_parliament: dict[str, str] = {}
+
+    if level == "Unit":
+        pass  # unit_lookup already filled above
+    elif level == "AC" and loc_ids:
+        for r in db.rows(
+            f"""SELECT a.id, a.name, p.parliament_name
+                  FROM assembly a
+                  LEFT JOIN parliament p ON p.id = a.parliament_id
+                 WHERE a.id IN ({db.placeholders(loc_ids)})""",
+            tuple(loc_ids),
+        ):
+            assembly_names[str(r["id"])] = r["name"] or ""
+            ac_parliament[str(r["id"])] = r["parliament_name"] or ""
+    elif level == "PC" and loc_ids:
+        for r in db.rows(
+            f"SELECT id, parliament_name FROM parliament WHERE id IN ({db.placeholders(loc_ids)})",
+            tuple(loc_ids),
+        ):
+            parliament_names[str(r["id"])] = r["parliament_name"] or ""
+    elif level == "Mandal":
         mandal_locations = {
             str(r["location_id"]): r["location_name"] or ""
             for r in db.rows(_COMMITTEE_LOCATIONS)
             if r["location_id"] is not None
         }
+        if loc_ids:
+            for r in db.rows(
+                f"SELECT id, name FROM mandal WHERE id IN ({db.placeholders(loc_ids)})",
+                tuple(loc_ids),
+            ):
+                mandal_locations.setdefault(str(r["id"]), r["name"] or "")
+            for r in db.rows(
+                f"SELECT id, town_name FROM town WHERE id IN ({db.placeholders(loc_ids)})",
+                tuple(loc_ids),
+            ):
+                mandal_locations.setdefault(str(r["id"]), r["town_name"] or "")
+        ac_ids = list({
+            str(schedules[str(r["location_id"])]["assembly_id"])
+            for r in rows
+            if r["location_id"] is not None
+            and str(r["location_id"]) in schedules
+            and schedules[str(r["location_id"])]["assembly_id"] is not None
+        })
+        if ac_ids:
+            for r in db.rows(
+                f"""SELECT a.id, a.name, p.parliament_name
+                      FROM assembly a
+                      LEFT JOIN parliament p ON p.id = a.parliament_id
+                     WHERE a.id IN ({db.placeholders(ac_ids)})""",
+                tuple(ac_ids),
+            ):
+                mandal_assembly[str(r["id"])] = r["name"] or ""
+                mandal_parliament[str(r["id"])] = r["parliament_name"] or ""
 
     def row_out(r: dict[str, Any]) -> dict[str, Any]:
-        level = adapt.level_code(r["level_name"])
+        loc = str(r["location_id"]) if r["location_id"] is not None else ""
+        sched = schedules.get(loc, {})
+        location_text = sched.get("location_text") or ""
         if level == "PC":
-            location = r["entity_parliament_name"] or r["location_text"] or ""
+            location = parliament_names.get(loc) or location_text
+            assembly, parliament = "", ""
         elif level == "AC":
-            location = r["entity_assembly_name"] or r["location_text"] or ""
+            location = assembly_names.get(loc) or location_text
+            assembly, parliament = "", ac_parliament.get(loc, "")
         elif level == "Mandal":
-            location = (
-                mandal_locations.get(str(r["entity_id"]))
-                or r["mandal_name"] or r["town_name"] or r["location_text"] or ""
-            )
+            location = mandal_locations.get(loc) or location_text
+            ac = str(sched["assembly_id"]) if sched.get("assembly_id") is not None else ""
+            assembly = mandal_assembly.get(ac, "")
+            parliament = mandal_parliament.get(ac, "")
         else:
-            location = r["unit_code"] or r["location_text"] or ""
-        if level == "Mandal":
-            assembly = r["mandal_assembly_name"] or ""
-            parliament = r["mandal_parliament_name"] or ""
-        elif level == "Unit":
-            info = unit_lookup.get(str(r["unit_id"]), {})
+            info = unit_lookup.get(loc, {})
+            location = info.get("code") or location_text
             assembly = info.get("assembly", "")
             parliament = info.get("parliament", "")
-        elif level == "AC":
-            assembly = ""
-            parliament = r["ac_parliament_name"] or ""
-        else:
-            assembly = ""
-            parliament = ""
         return {
             "id": r["id"],
             "parliament": parliament,
             "assembly": assembly,
             "location": location,
-            "appConducted": r["status"] in (1, 2),
+            "appConducted": sched.get("status") in (1, 2),
             "pcConducted": r["is_conducted"] == "Y",
-            "updatedAt": r["updated_at"].isoformat() if r["updated_at"] else None,
-            "conductedStatusId": r["meeting_conducted_status_id"],
+            "conductedStatusId": r["id"],
             "categoryId": r["remarks_category_id"],
             "remarks": r["remarks"] or "",
         }
 
-    return {"total": len(rows), "rows": [row_out(r) for r in rows]}
+    return {"total": total, "rows": [row_out(r) for r in rows]}
 
 
 class ConductedRemarkIn(BaseModel):
