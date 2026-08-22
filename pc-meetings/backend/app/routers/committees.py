@@ -9,11 +9,16 @@ the three location kinds the meetings side already folds into one
 
 from __future__ import annotations
 
+import os
+import threading
+import time
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from .. import db
+from ..access import Scope
+from ..auth import caller_scope
 
 router = APIRouter(prefix="/api/committees", tags=["committees"])
 
@@ -39,11 +44,48 @@ SELECT
  ORDER BY C.name, location_name
 """
 
+# Seven joins across two schemas, and the answer changes about as often as a committee is
+# enrolled — but seven call sites read it, two of them on every meetings-list load (the
+# App-side and PC-side "not updated" counts, which `db.parallel` runs at the same time),
+# so the same roster was being rebuilt several times per page. Memoised behind a lock so
+# the concurrent pair costs one query rather than two, and every caller treats the rows as
+# read-only.
+_TTL_SECONDS = int(os.getenv("COMMITTEE_LOCATIONS_CACHE_SECONDS", "300"))
+_cache: tuple[float, list[dict[str, Any]]] | None = None
+_cache_lock = threading.Lock()
+
+
+def locations() -> list[dict[str, Any]]:
+    """Every enrolled Mandal/Town/Division committee row. Do not mutate — shared."""
+    global _cache
+    now = time.monotonic()
+    hit = _cache
+    if hit is not None and hit[0] > now:
+        return hit[1]
+    with _cache_lock:
+        hit = _cache
+        if hit is not None and hit[0] > now:
+            return hit[1]
+        rows = db.rows(_LOCATIONS)
+        _cache = (now + _TTL_SECONDS, rows)
+        return rows
+
 
 @router.get("/mandal-town-division")
-def mandal_town_division() -> dict[str, Any]:
-    """Every enrolled Mandal/Town/Division committee, with its total count."""
-    rows = db.rows(_LOCATIONS)
+def mandal_town_division(scope: Scope = Depends(caller_scope)) -> dict[str, Any]:
+    """Every enrolled Mandal/Town/Division committee inside the assemblies this
+    caller has been granted.
+
+    Filtered here rather than in the query: `locations()` is memoised and shared
+    with the meetings routes, so it stays the whole roster and each caller takes
+    their slice of it. `constituency_id` is the assembly — the same id
+    `mytdp.assembly.id` uses, see `access.py`.
+    """
+    allowed = {str(i) for i in (scope.ids or ())}
+    rows = [
+        r for r in locations()
+        if scope.unrestricted or str(r["constituency_id"]) in allowed
+    ]
     return {
         "total": len(rows),
         "rows": [

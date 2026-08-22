@@ -20,8 +20,10 @@
 # is not safe to serve to whoever can reach the port, and do not add a write endpoint here
 # without adding authentication first.
 #
-# --- Read-only ------------------------------------------------------------
-# Every route is a GET. The writes (propose, confirm, upload nomination) stay in
+# --- Reads are open, writes are not ----------------------------------------
+# Every GET is unauthenticated, exactly as this backend was built. The three POSTs in
+# routers/writes.py require a valid portal session token (auth.py) and take the acting
+# user id from it. Guarding the writes did NOT protect the reads. The writes (propose, confirm, upload nomination) stay in
 # ../../portal-frontend-code/Backend/main.py, which owns assignProposalCandidate and the
 # eligibility rules behind its 409s. A second copy of those rules here would drift.
 #
@@ -36,7 +38,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import dashboard, lookups
+from routers import dashboard, lookups, writes
 
 app = FastAPI(
     title="Local Body Elections - Dashboard 2 API",
@@ -50,12 +52,13 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
 app.include_router(lookups.router)
 app.include_router(dashboard.router)
+app.include_router(writes.router)
 
 
 @app.get("/health", include_in_schema=False)

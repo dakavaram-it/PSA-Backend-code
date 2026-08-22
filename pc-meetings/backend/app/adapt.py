@@ -45,8 +45,20 @@ def meeting(
     """One meeting card.
 
     ``agg`` carries the counted figures for this meeting: invitees, attendees,
-    attendance records, the schedule funnel, resolutions, remarks taken, the
-    PC in-charge's real conducted/not-conducted split, and their remark count.
+    attendance records, resolutions, remarks taken, the App-side schedule
+    funnel and the PC in-charge's real conducted/not-conducted split.
+
+    The schedule funnel and PC split (`units`/`unitsCompleted`/`pcTotal`/
+    `pcConducted`/`pcNull` on ``agg``) are already roster-scoped by the
+    caller (`_schedule_stats`/`_conducted_stats`) — a `meeting_schedules` or
+    `meeting_conducted_status` row whose location has since fallen out of
+    the current roster (an old-publication unit, a mandal no longer
+    enrolled) isn't counted as Conducted or Not Conducted here, the same way
+    it was already excluded from ``not_scheduled``/``pc_not_updated`` below.
+    Without that, the three App buckets (and the three PC buckets) could sum
+    to more than the roster size by however many such rows a meeting happens
+    to carry.
+
     ``not_scheduled`` and ``pc_not_updated`` are already the finished figures
     — how many of this meeting's own level's roster locations (units,
     mandals/towns, ACs or PCs) have no `meeting_schedules` row, respectively
@@ -69,6 +81,7 @@ def meeting(
 
     pc_total = num(agg.get("pcTotal"))
     pc_conducted = num(agg.get("pcConducted"))
+    pc_null = num(agg.get("pcNull"))
     # MCS row count — same universe PC Status and App & PC Summary use.
     total_meetings = pc_total
 
@@ -91,6 +104,8 @@ def meeting(
         "attendees": attendees,
         "absent": absent,
         "units": {
+            # Roster-scoped (see the docstring above) — a schedule row for a
+            # location no longer on the current roster isn't in this total.
             "total": total_units,
             # `meeting_schedules.status` is a flag, not a lifecycle: 1 or 2 is
             # held, 0 is not. There is no in-progress state to report, so
@@ -108,24 +123,25 @@ def meeting(
         "notScheduled": not_scheduled,
         # MCS rows for this meeting_id — shown on the summary row of each card.
         "totalMeetings": total_meetings,
-        # `meeting_conducted_status.is_conducted`: 'Y' is conducted, anything
-        # else — NULL, and 'N' on the rare row that carries one — is not, a
-        # strict two-state read of the real PC in-charge feed, not the
-        # schedule heuristic. A `GROUP BY` never yields a zero-count group,
-        # so `pc_total == 0` can only mean this meeting has no rows there at
-        # all — `None` rather than a fake 0/0, so the UI can tell "not
-        # tracked yet" from "tracked, zero conducted so far".
+        # `meeting_conducted_status.is_conducted`: 'Y' is conducted, `IS NULL`
+        # is Not conducted — the row exists but the PC in-charge hasn't marked
+        # it. An explicit 'N' is its own, rare state and counts as neither;
+        # `conducted + notConducted` can therefore sit just under `total` on a
+        # meeting that carries one. A `GROUP BY` never yields a zero-count
+        # group, so `pc_total == 0` can only mean this meeting has no rows
+        # there at all — `None` rather than a fake 0/0, so the UI can tell
+        # "not tracked yet" from "tracked, zero conducted so far".
         "pc": None if pc_total == 0 else {
             "total": pc_total,
             "conducted": pc_conducted,
-            "notConducted": pc_total - pc_conducted,
+            "notConducted": pc_null,
             # Roster locations with no `meeting_conducted_status` row at all
             # — the PC-side twin of `notScheduled` above, outside `total` on
             # purpose the same way `notScheduled` sits outside `units.total`.
             "notUpdated": pc_not_updated,
             # Backup when the roster gap is unavailable: Total Meetings minus
             # (PC Conducted + PC Not Conducted).
-            "notUpdatedBackup": max(total_meetings - pc_total, 0),
+            "notUpdatedBackup": max(total_meetings - (pc_conducted + pc_null), 0),
         },
         # Rows in `meeting_remark` carrying real text, joined off the PC
         # in-charge's own conducted-status rows above.

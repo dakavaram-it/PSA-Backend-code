@@ -22,6 +22,17 @@ DB = dict(
     cursorclass=pymysql.cursors.DictCursor,
     connect_timeout=15,
     read_timeout=60,
+    # The server's global lock_wait_timeout is 31536000 (a year), so a metadata lock
+    # held by another session — a DDL, or an ETL job parked in a transaction — parks
+    # every query on this connection until someone notices. That is not theoretical:
+    # 220 psa_user queries were stuck in "Waiting for table metadata lock" on
+    # dakavara_pa/mytdp for over an hour, threads and pool slots pinned the whole time,
+    # when this was added. Ten seconds is long enough for a real lock hand-off and short
+    # enough that a jam errors as 1205 on the one request that hit it instead of draining
+    # the pool. Same pragma, same reasoning as ../../portal-frontend-code/Backend/main.py
+    # and ../../pc-meetings/backend/app/db.py, which already set it.
+    init_command="SET SESSION lock_wait_timeout = "
+    + os.environ.get("DB_LOCK_WAIT_TIMEOUT", "10"),
 )
 
 # --- connection pooling ----------------------------------------------------

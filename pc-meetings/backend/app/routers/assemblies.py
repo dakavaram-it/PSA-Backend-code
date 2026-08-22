@@ -10,9 +10,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
-from .. import db
+from .. import access, db
+from ..access import Scope
+from ..auth import caller_scope
 
 router = APIRouter(prefix="/api/assemblies", tags=["assemblies"])
 
@@ -20,18 +22,21 @@ _ASSEMBLIES = """
 SELECT a.id, a.name, p.parliament_name
   FROM assembly a
   LEFT JOIN parliament p ON p.id = a.parliament_id
+ WHERE {scoped}
  ORDER BY p.parliament_name, a.name
 """
 
 _PARLIAMENTS = """
-SELECT id, parliament_name FROM parliament ORDER BY parliament_name
+SELECT p.id, p.parliament_name FROM parliament p
+ WHERE {scoped}
+ ORDER BY p.parliament_name
 """
 
 
 @router.get("")
-def list_assemblies() -> dict[str, Any]:
-    """Every assembly constituency in the state, with its total count."""
-    rows = db.rows(_ASSEMBLIES)
+def list_assemblies(scope: Scope = Depends(caller_scope)) -> dict[str, Any]:
+    """Every assembly constituency this caller has been granted."""
+    rows = db.rows(_ASSEMBLIES.format(scoped=access.assembly(scope, "a")))
     return {
         "total": len(rows),
         "rows": [
@@ -46,9 +51,9 @@ def list_assemblies() -> dict[str, Any]:
 
 
 @router.get("/parliaments")
-def list_parliaments() -> dict[str, Any]:
-    """Every parliament constituency in the state, with its total count."""
-    rows = db.rows(_PARLIAMENTS)
+def list_parliaments(scope: Scope = Depends(caller_scope)) -> dict[str, Any]:
+    """Every parliament holding at least one assembly this caller was granted."""
+    rows = db.rows(_PARLIAMENTS.format(scoped=access.parliament(scope, "p")))
     return {
         "total": len(rows),
         "rows": [

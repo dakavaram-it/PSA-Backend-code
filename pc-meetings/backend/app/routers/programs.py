@@ -24,6 +24,12 @@ Calendar Meetings is the one programme `/leaders` does not read
 `leader_program_activity` for: it counts real committee-meeting attendance
 from `mytdp.meetings`/`meeting_invitee`/`meeting_attendance` instead — see
 `_is_calendar_meetings` and the branch in `program_leaders`.
+
+Every roster count and member list here is narrowed to the assemblies the caller
+was granted, through `leader.constituency_id` — the same id `mytdp.assembly.id`
+uses (see `access.py`). A role with no leader inside the caller's assemblies
+drops out of `/roles` and both summary cards entirely, rather than showing as a
+row of zeroes.
 """
 
 from __future__ import annotations
@@ -31,9 +37,12 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 
-from .. import config, db
+from .. import access, config, db
+from ..access import Scope
+from ..auth import caller_scope
 
 router = APIRouter(prefix="/api/programs", tags=["programs"])
 
@@ -42,6 +51,12 @@ _UNWIRED = "No data source configured"
 # Matches the frontend's own `isCalendarMeetingsActivity` — the one programme
 # name that gets the mytdp-backed branch below rather than leader_program_activity.
 _CALENDAR_MEETINGS_RE = re.compile(r"calendar\s*meetings?", re.IGNORECASE)
+
+# party_track.attendance_type: 1 Attended, 2 Conducted, 3 Absent, 4 Not
+# Applicable. Only the first two of those describe one leader's own presence
+# at one meeting — "Conducted" is about the meeting itself, not read here.
+_ATTENDANCE_TYPE_ATTENDED = 1
+_ATTENDANCE_TYPE_ABSENT = 3
 
 
 def _is_calendar_meetings(program_name: str | None) -> bool:
@@ -88,7 +103,7 @@ def _leader_with_role_sql() -> str:
     )"""
 
 
-def _active_role_ids() -> list[int]:
+def _active_role_ids(scope: Scope) -> list[int]:
     """Role ids with at least one active party leader, by the same effective
     role `_leader_with_role_sql` computes. `/role-summary` and
     `/activity-summary` each used to run that derived table a second time
@@ -99,7 +114,7 @@ def _active_role_ids() -> list[int]:
     reused as a plain `role_id IN (...)` list instead."""
     rows = db.rows(
         f"""SELECT DISTINCT role_id FROM {_leader_with_role_sql()} l
-             WHERE is_deleted = 'N' AND party_id = %s""",
+             WHERE is_deleted = 'N' AND party_id = %s AND {access.leader(scope)}""",
         (config.LEADER_PARTY_ID,),
     )
     return [int(r["role_id"]) for r in rows if r["role_id"] is not None]
@@ -125,7 +140,7 @@ async def list_programs(
 
 
 @router.get("/roles")
-def list_roles() -> list[dict[str, Any]]:
+def list_roles(scope: Scope = Depends(caller_scope)) -> list[dict[str, Any]]:
     """Every member designation a programme can be filtered by (Minister, MLA,
     MP, Mandal President, …).
 
@@ -142,7 +157,7 @@ def list_roles() -> list[dict[str, Any]]:
     already-populated tables, the same ones `/role-summary` and
     `/activity-summary` read.
     """
-    active_role_ids = _active_role_ids()
+    active_role_ids = _active_role_ids(scope)
     if not active_role_ids:
         return []
     id_list = ",".join(str(rid) for rid in active_role_ids)
@@ -177,6 +192,7 @@ def list_activities() -> list[dict[str, Any]]:
 def role_summary(
     year: int = Query(..., ge=2000, le=2100),
     month: int = Query(..., ge=1, le=12),
+    scope: Scope = Depends(caller_scope),
 ) -> list[dict[str, Any]]:
     """The first Programmes card: every role `/roles` lists — an active
     leader and a `program_role` mapping, same as there — its `leader` roster
@@ -189,7 +205,7 @@ def role_summary(
     Both are scoped to `config.LEADER_PARTY_ID`, same as `/leaders`.
     """
     month_id = _month_id(year, month)
-    active_role_ids = _active_role_ids()
+    active_role_ids = _active_role_ids(scope)
     if not active_role_ids:
         return []
     id_list = ",".join(str(rid) for rid in active_role_ids)
@@ -200,6 +216,7 @@ def role_summary(
                    SUM(l.is_deleted = 'N' AND u.leader_id IS NOT NULL) AS updated
               FROM {config.PARTY_TRACK_DB}.role r
               LEFT JOIN {_leader_with_role_sql()} l ON l.role_id = r.role_id AND l.party_id = %s
+                     AND {access.leader(scope)}
               LEFT JOIN (
                     SELECT DISTINCT leader_id FROM {config.PARTY_TRACK_DB}.leader_program_activity
                      WHERE month_id = %s AND (is_deleted IS NULL OR is_deleted = 'N')
@@ -232,6 +249,7 @@ def role_summary(
 def activity_summary(
     year: int = Query(..., ge=2000, le=2100),
     month: int = Query(..., ge=1, le=12),
+    scope: Scope = Depends(caller_scope),
 ) -> list[dict[str, Any]]:
     """The second Programmes card: one row per (role, programme) pairing
     `program_role` actually defines — not every role crossed with every
@@ -243,7 +261,7 @@ def activity_summary(
     card below can ask for one pairing's leaders without re-deriving ids
     from the display names."""
     month_id = _month_id(year, month)
-    active_role_ids = _active_role_ids()
+    active_role_ids = _active_role_ids(scope)
     if not active_role_ids:
         return []
     id_list = ",".join(str(rid) for rid in active_role_ids)
@@ -255,6 +273,7 @@ def activity_summary(
               JOIN {config.PARTY_TRACK_DB}.role r ON r.role_id = pr.role_id
               JOIN {config.PARTY_TRACK_DB}.program p ON p.program_id = pr.program_id
               LEFT JOIN {_leader_with_role_sql()} l ON l.role_id = pr.role_id AND l.party_id = %s
+                     AND {access.leader(scope)}
               LEFT JOIN (
                     SELECT DISTINCT leader_id, program_id FROM {config.PARTY_TRACK_DB}.leader_program_activity
                      WHERE month_id = %s AND (is_deleted IS NULL OR is_deleted = 'N')
@@ -287,6 +306,7 @@ def program_leaders(
     activity_id: int = Query(..., description="program_id, despite the name — matches activity-summary's field"),
     year: int = Query(..., ge=2000, le=2100),
     month: int = Query(..., ge=1, le=12),
+    scope: Scope = Depends(caller_scope),
 ) -> list[dict[str, Any]]:
     """The third Programmes card: every active leader in one role, with
     their `leader_program_activity` participation for one programme and
@@ -344,6 +364,7 @@ def program_leaders(
                           WHERE YEAR(meeting_date) = %s AND MONTH(meeting_date) = %s
                        )
                    AND l.role_id = %s AND l.is_deleted = 'N' AND l.party_id = %s
+                   AND {access.leader(scope)}
                  GROUP BY l.leader_id, l.leader_name, l.mobile_no, l.tdp_cadre_id,
                           r.role_name, a.name, p.parliament_name
                  ORDER BY l.leader_name
@@ -363,6 +384,7 @@ def program_leaders(
                          ON lpa.leader_id = l.leader_id AND lpa.program_id = %s AND lpa.month_id = %s
                         AND (lpa.is_deleted IS NULL OR lpa.is_deleted = 'N')
                  WHERE l.role_id = %s AND l.is_deleted = 'N' AND l.party_id = %s
+                   AND {access.leader(scope)}
                  ORDER BY l.leader_name
                  LIMIT %s""",
             (activity_id, month_id, role_id, config.LEADER_PARTY_ID, config.MAX_PAGE_SIZE),
@@ -382,6 +404,263 @@ def program_leaders(
         }
         for r in rows
     ]
+
+
+def _scoped_leader(leader_id: int, scope: Scope) -> dict[str, Any] | None:
+    """This leader's row, or None when they sit outside the caller's granted
+    assemblies — the gate every `/leaders/{leader_id}/…` route below goes
+    through, so a leader the caller was never shown reads as unknown rather
+    than as a refusal that confirms they exist."""
+    return db.one(
+        f"""SELECT l.tdp_cadre_id FROM {config.PARTY_TRACK_DB}.leader l
+             WHERE l.leader_id = %s AND {access.leader(scope)}""",
+        (leader_id,),
+    )
+
+
+@router.get("/leaders/{leader_id}/meetings")
+def program_leader_meetings(
+    leader_id: int,
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12),
+    scope: Scope = Depends(caller_scope),
+) -> list[dict[str, Any]]:
+    """Calendar Meetings' Update modal: every real committee meeting this
+    leader (`leader_id` is `party_track.leader.leader_id`, the same `mid`
+    `/leaders` returns for a calendar-variant row) was invited to in the
+    given month — the individual `mytdp` rows behind their aggregate
+    participated/completed count on the card above.
+
+    `remarks`/`filePath` come from `party_track.leader_meeting_attendance`,
+    the table this feature owns — not `mytdp.feedback_comment`, which only
+    accepts remarks for absent invitees (a rule that belongs to the main
+    Meetings screen, not here). See `save_leader_meeting_remarks` for the
+    write side.
+    """
+    leader = _scoped_leader(leader_id, scope)
+    if leader is None or leader["tdp_cadre_id"] is None:
+        return []
+    cadre_id = leader["tdp_cadre_id"]
+    rows = db.rows(
+        f"""SELECT m.id AS meeting_id, m.title, ml.level_name, m.meeting_date,
+                   (att.mid IS NOT NULL) AS attended,
+                   lma.remarks, lma.file_path
+              FROM meeting_invitee mi
+              JOIN meetings m ON m.id = CAST(mi.meeting_id AS UNSIGNED)
+              LEFT JOIN meeting_levels ml ON ml.id = m.meeting_level_id
+              LEFT JOIN (SELECT DISTINCT meeting_id, mid FROM meeting_attendance) att
+                     ON att.meeting_id = m.id AND att.mid = mi.membership_id
+              LEFT JOIN {config.PARTY_TRACK_DB}.leader_meeting_attendance lma
+                     ON lma.leader_id = %s AND lma.meeting_id = m.id
+                    AND (lma.is_deleted IS NULL OR lma.is_deleted = 'N')
+             WHERE mi.tdp_cadre_id = %s
+               AND YEAR(m.meeting_date) = %s AND MONTH(m.meeting_date) = %s
+             ORDER BY m.meeting_date DESC""",
+        (leader_id, cadre_id, year, month),
+    )
+    return [
+        {
+            "meetingId": r["meeting_id"],
+            "meetingType": r["title"] or "—",
+            "level": r["level_name"] or "",
+            "date": r["meeting_date"].isoformat() if r["meeting_date"] else None,
+            "attended": bool(r["attended"]),
+            "remarks": r["remarks"] or "",
+            "filePath": r["file_path"] or "",
+        }
+        for r in rows
+    ]
+
+
+class LeaderMeetingRemarksIn(BaseModel):
+    remarks: str = Field(default="", max_length=config.MAX_REMARKS_CHARS)
+
+
+@router.put("/leaders/{leader_id}/meetings/{meeting_id}/remarks")
+def save_leader_meeting_remarks(
+    leader_id: int,
+    meeting_id: int,
+    body: LeaderMeetingRemarksIn = Body(...),
+    scope: Scope = Depends(caller_scope),
+) -> dict[str, Any]:
+    """Calendar Meetings' own remarks capture, into `leader_meeting_attendance`
+    rather than `mytdp.feedback_comment` — accepted regardless of whether the
+    leader attended, unlike the main Meetings screen's absent-only rule.
+
+    `attendance_type_id` is stamped from the same `meeting_attendance` truth
+    `program_leader_meetings` reads (Attended/Absent), not chosen by the
+    caller — it records what actually happened, alongside the remark, rather
+    than trusting the client to say so. `file_path` is left untouched here:
+    there is no upload endpoint yet to have written one.
+    """
+    leader = _scoped_leader(leader_id, scope)
+    if leader is None or leader["tdp_cadre_id"] is None:
+        raise HTTPException(status_code=404, detail="Unknown leader")
+    cadre_id = leader["tdp_cadre_id"]
+
+    invitee = db.one(
+        """SELECT membership_id FROM meeting_invitee
+            WHERE tdp_cadre_id = %s AND meeting_id = %s LIMIT 1""",
+        (cadre_id, str(meeting_id)),
+    )
+    if invitee is None:
+        raise HTTPException(status_code=404, detail="Leader was not invited to this meeting")
+
+    attended = db.scalar(
+        "SELECT 1 FROM meeting_attendance WHERE meeting_id = %s AND mid = %s LIMIT 1",
+        (meeting_id, invitee["membership_id"]),
+    )
+    attendance_type_id = _ATTENDANCE_TYPE_ATTENDED if attended else _ATTENDANCE_TYPE_ABSENT
+    remarks = body.remarks.strip()
+
+    existing = db.one(
+        f"""SELECT leader_meeting_attendance_id
+              FROM {config.PARTY_TRACK_DB}.leader_meeting_attendance
+             WHERE leader_id = %s AND meeting_id = %s
+               AND (is_deleted IS NULL OR is_deleted = 'N')
+             ORDER BY leader_meeting_attendance_id DESC LIMIT 1""",
+        (leader_id, meeting_id),
+    )
+    if existing:
+        db.execute(
+            f"""UPDATE {config.PARTY_TRACK_DB}.leader_meeting_attendance
+                   SET remarks = %s, attendance_type_id = %s, updated_time = NOW()
+                 WHERE leader_meeting_attendance_id = %s""",
+            (remarks, attendance_type_id, existing["leader_meeting_attendance_id"]),
+        )
+    else:
+        db.execute(
+            f"""INSERT INTO {config.PARTY_TRACK_DB}.leader_meeting_attendance
+                   (leader_id, meeting_id, attendance_type_id, remarks, is_deleted, inserted_time)
+                 VALUES (%s, %s, %s, %s, 'N', NOW())""",
+            (leader_id, meeting_id, attendance_type_id, remarks),
+        )
+    return {"leaderId": leader_id, "meetingId": meeting_id, "remarks": remarks}
+
+
+# `party_track.leader_meetings.meeting_type` is `varchar(20)` — too short for
+# some of `party_track.program`'s own names, so those are stored under a
+# short label instead (confirmed against the live `program` rows: id 3
+# Grievance Meetings, 4 Cadre Meetings, 5 Central Party Office Grievance, 8
+# PC Lunch/Dinner Meetings, 9 Press Meets). Everything else already fits
+# (Pedala Sevalo, Swatch Andhra, Pattadar Passbook, Field Performance, all
+# <=20 chars) and is stored verbatim. Calendar Meeting is deliberately absent
+# here — it never writes to this table, see `leader_meeting_attendance` above.
+_MEETING_TYPE_LABELS = {
+    "grievance meetings": "Grievance",
+    "cadre meetings": "Cadre",
+    "central party office grievance": "Office Grievance",
+    "pc lunch/dinner meetings": "Dinner",
+    "press meets": "Pressmeet",
+}
+
+
+def _meeting_type_label(program_name: str) -> str:
+    name = program_name.strip()
+    return _MEETING_TYPE_LABELS.get(name.lower(), name)[:20]
+
+
+def _program_name(program_id: int) -> str | None:
+    return db.scalar(
+        f"SELECT program_name FROM {config.PARTY_TRACK_DB}.program WHERE program_id = %s",
+        (program_id,),
+    )
+
+
+@router.get("/leaders/{leader_id}/log-entries")
+def program_leader_log_entries(
+    leader_id: int,
+    program_id: int = Query(...),
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12),
+    scope: Scope = Depends(caller_scope),
+) -> list[dict[str, Any]]:
+    """The Update modal for every programme other than Calendar Meetings: a
+    leader's own hand-added date/remarks log for one programme/month, off
+    `party_track.leader_meetings` — a manually-added list, unlike Calendar
+    Meetings' real invitee-backed rows, so there is nothing to distinguish
+    from "not invited" here, only what has been logged so far.
+
+    Scoped by `meeting_type` (see `_meeting_type_label`) the same way it is
+    written on save, so switching the Update modal between two programmes
+    for the same leader never shows one programme's entries under another's.
+    """
+    if _scoped_leader(leader_id, scope) is None:
+        return []
+    program_name = _program_name(program_id)
+    if program_name is None:
+        return []
+    meeting_type = _meeting_type_label(program_name)
+    rows = db.rows(
+        f"""SELECT leader_meetings_id, meeting_date, remarks, file_path
+              FROM {config.PARTY_TRACK_DB}.leader_meetings
+             WHERE leader_id = %s AND meeting_type = %s
+               AND (is_deleted IS NULL OR is_deleted = 'N')
+               AND YEAR(meeting_date) = %s AND MONTH(meeting_date) = %s
+             ORDER BY meeting_date DESC, leader_meetings_id DESC""",
+        (leader_id, meeting_type, year, month),
+    )
+    return [
+        {
+            "id": r["leader_meetings_id"],
+            "date": r["meeting_date"].isoformat() if r["meeting_date"] else None,
+            "remarks": r["remarks"] or "",
+            "filePath": r["file_path"] or "",
+        }
+        for r in rows
+    ]
+
+
+class LeaderLogEntryIn(BaseModel):
+    programId: int
+    date: str
+    remarks: str = Field(default="", max_length=config.MAX_REMARKS_CHARS)
+
+
+@router.post("/leaders/{leader_id}/log-entries")
+def add_leader_log_entry(
+    leader_id: int,
+    body: LeaderLogEntryIn = Body(...),
+    scope: Scope = Depends(caller_scope),
+) -> dict[str, Any]:
+    """Adds one row to a leader's log for one programme. `file_path` is left
+    unset here, same as `save_leader_meeting_remarks` above: there is no
+    upload endpoint yet to have written one.
+    """
+    if _scoped_leader(leader_id, scope) is None:
+        raise HTTPException(status_code=404, detail="Unknown leader")
+    program_name = _program_name(body.programId)
+    if program_name is None:
+        raise HTTPException(status_code=404, detail="Unknown programme")
+    meeting_type = _meeting_type_label(program_name)
+    remarks = body.remarks.strip()
+    new_id = db.insert(
+        f"""INSERT INTO {config.PARTY_TRACK_DB}.leader_meetings
+               (leader_id, meeting_type, meeting_date, remarks, is_deleted, inserted_time)
+             VALUES (%s, %s, %s, %s, 'N', NOW())""",
+        (leader_id, meeting_type, body.date, remarks),
+    )
+    return {"id": new_id, "date": body.date, "remarks": remarks}
+
+
+@router.delete("/leaders/{leader_id}/log-entries/{entry_id}")
+def delete_leader_log_entry(
+    leader_id: int, entry_id: int, scope: Scope = Depends(caller_scope)
+) -> dict[str, Any]:
+    """Soft-deletes one log row — `is_deleted`, not a real DELETE, matching
+    every other removal in this schema (`leader_meeting_attendance`
+    included)."""
+    if _scoped_leader(leader_id, scope) is None:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    updated = db.execute(
+        f"""UPDATE {config.PARTY_TRACK_DB}.leader_meetings
+               SET is_deleted = 'Y', updated_time = NOW()
+             WHERE leader_meetings_id = %s AND leader_id = %s""",
+        (entry_id, leader_id),
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    return {"id": entry_id}
 
 
 @router.get("/{program_id}/daywise")

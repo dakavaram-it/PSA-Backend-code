@@ -12,17 +12,26 @@ Three facts about `mytdp` shape this file:
 * **Nothing is cached.** Every figure is counted in SQL at request time; the
   Unit-level meeting is 167k invitees and still answers in seconds, which is what
   the old pull-once-into-SQLite projection existed to avoid.
+
+Every figure is also narrowed to the assemblies the caller has been granted. The
+predicates come from `access.py` — which table reaches an assembly by which
+column is not uniform, and that module is where it is written down. A caller
+granted the whole state gets `1 = 1` for every one of them, so their queries run
+exactly as they did before scoping existed.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from .. import adapt, config, db
+from .. import access, adapt, config, db
+from ..access import Scope
+from ..auth import caller_scope
 from .committees import _LOCATIONS as _COMMITTEE_LOCATIONS
+from .committees import locations as committee_locations
 
 router = APIRouter(prefix="/api/meetings", tags=["meetings"])
 
@@ -44,60 +53,97 @@ _ATTENDED = "(SELECT DISTINCT meeting_id, mid FROM meeting_attendance)"
 
 # A capture is a live, non-empty remark on a committee meeting.
 _FEEDBACK = f"""
-  FROM feedback_comment
- WHERE feeback_program_type_id = {config.MEETING_TYPE_ID}
-   AND COALESCE(is_deleted, 'N') <> 'Y'
-   AND remarks IS NOT NULL AND remarks <> ''
+  FROM feedback_comment f
+ WHERE f.feeback_program_type_id = {config.MEETING_TYPE_ID}
+   AND COALESCE(f.is_deleted, 'N') <> 'Y'
+   AND f.remarks IS NOT NULL AND f.remarks <> ''
 """
 
 
-# The six light counts, as one statement. Each still scans only its own table
-# and groups the same way it did as six separate queries; they are stitched with
+# The four light counts, as one statement. Each still scans only its own table
+# and groups the same way it did as four separate queries; they are stitched with
 # UNION ALL because the round trip, not the scan, is what a dashboard load pays
-# for — ~200ms each from outside the VPC, six of them for figures that take
+# for — ~200ms each from outside the VPC, four of them for figures that take
 # milliseconds to count. `src` says which count a row carries and the three
 # value columns are read positionally through `_LIGHT_KEYS`.
+#
+# `meeting_schedules` and `meeting_conducted_status` are *not* here — see
+# `_schedule_stats`/`_conducted_stats` below, which count them roster-scoped
+# instead of with a flat `meeting_id`-only `GROUP BY`.
+#
+# Formatted once per meeting *level* rather than once for every id: none of these
+# four tables carries an assembly of its own, and the row each borrows one from
+# (a schedule, a conducted-status row, an invitee) resolves differently at each
+# level — see `access.py`. An unrestricted caller gets `1 = 1` in every predicate
+# slot, so the branches stay exactly what they were.
 _LIGHT_AGGREGATES = """
-SELECT 'attendance' AS src, meeting_id AS id, COUNT(*) AS a, 0 AS b, 0 AS c
-  FROM meeting_attendance WHERE meeting_id IN ({marks}) GROUP BY meeting_id
+SELECT 'attendance' AS src, ma.meeting_id AS id, COUNT(*) AS a, 0 AS b, 0 AS c
+  FROM meeting_attendance ma
+ WHERE ma.meeting_id IN ({marks}) AND {attendance}
+ GROUP BY ma.meeting_id
 UNION ALL
-SELECT 'schedules', meeting_id, COUNT(*), SUM(status IN (1, 2)), 0
-  FROM meeting_schedules WHERE meeting_id IN ({marks}) GROUP BY meeting_id
+SELECT 'resolutions', mres.meeting_id, COUNT(*), 0, 0
+  FROM meeting_resolutions mres
+ WHERE mres.meeting_id IN ({marks}) AND {resolutions}
+ GROUP BY mres.meeting_id
 UNION ALL
-SELECT 'resolutions', meeting_id, COUNT(*), 0, 0
-  FROM meeting_resolutions WHERE meeting_id IN ({marks}) GROUP BY meeting_id
+SELECT 'pcRemarks', mr.meeting_id, COUNT(*), 0, 0
+  FROM meeting_remark mr
+ WHERE mr.meeting_id IN ({marks}) AND mr.remarks IS NOT NULL AND mr.remarks <> ''
+   AND {remarks}
+ GROUP BY mr.meeting_id
 UNION ALL
-SELECT 'pc', meeting_id, COUNT(*), SUM(is_conducted = 'Y'), SUM(is_conducted IS NULL)
-  FROM meeting_conducted_status WHERE meeting_id IN ({marks}) GROUP BY meeting_id
-UNION ALL
-SELECT 'pcRemarks', meeting_id, COUNT(*), 0, 0
-  FROM meeting_remark
- WHERE meeting_id IN ({marks}) AND remarks IS NOT NULL AND remarks <> ''
- GROUP BY meeting_id
-UNION ALL
-SELECT 'feedback', program_id, COUNT(*), 0, 0 {feedback} AND program_id IN ({marks})
- GROUP BY program_id
+SELECT 'feedback', f.program_id, COUNT(*), 0, 0 {feedback}
+   AND f.program_id IN ({marks}) AND {captures}
+ GROUP BY f.program_id
 """
 
-# Which figure each `src` row carries, in column order. `pcTotal`/`pcConducted`/
-# `pcNull` keep their old meanings: 'Y' alone counts as conducted, and NULL is
-# kept apart from an explicit 'N' because "App & PC Not updated" means NULL.
+# Which figure each `src` row carries, in column order.
 _LIGHT_KEYS = {
     "attendance": ("attendanceRecords",),
-    "schedules": ("units", "unitsCompleted"),
     "resolutions": ("resolutions",),
-    "pc": ("pcTotal", "pcConducted", "pcNull"),
     "pcRemarks": ("pcRemarks",),
     "feedback": ("feedbackTaken",),
 }
 
 
-def _aggregates(ids: list[str]) -> dict[str, dict[str, Any]]:
+def _by_level(meeting_rows: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """These meetings, by the level code whose rules their ids follow."""
+    out: dict[str, list[str]] = {}
+    for r in meeting_rows:
+        out.setdefault(adapt.level_code(r["level_name"]), []).append(str(r["id"]))
+    return out
+
+
+def _mandal_roster_ids(scope: Scope) -> set[str]:
+    """The enrolled Mandal/Town/Division committees this caller may see, as the
+    ids `meeting_schedules.entity_id` / `meeting_conducted_status.location_id`
+    hold them in. The roster carries `constituency_id`, which is the assembly —
+    the same id `mytdp.assembly.id` uses, see `access.py`.
+
+    Reads the memoised `committees.locations()` rather than re-running
+    `_COMMITTEE_LOCATIONS`: it is seven joins across two schemas, and a
+    meetings-list load asks for it on the App and the PC side at once.
+    """
+    allowed = {str(i) for i in (scope.ids or ())}
+    return {
+        str(r["location_id"])
+        for r in committee_locations()
+        if r["location_id"] is not None
+        and (scope.unrestricted or str(r["constituency_id"]) in allowed)
+    }
+
+
+def _aggregates(meeting_rows: list[dict[str, Any]], scope: Scope) -> dict[str, dict[str, Any]]:
     """Every counted figure for these meetings, keyed by meeting id.
 
-    Two queries: the invitee list against attendance, which is the only slow one
-    (half a million invitee rows, seconds), and everything else in one pass.
+    Three passes: the invitee list against attendance (the only slow one —
+    half a million invitee rows, seconds), the light flat counts in one pass,
+    and the roster-scoped schedule/PC-status counts (`_schedule_stats`,
+    `_conducted_stats`), which need each meeting's level to pick the right
+    roster join and so can't ride in the flat `_LIGHT_AGGREGATES` statement.
     """
+    ids = [str(r["id"]) for r in meeting_rows]
     if not ids:
         return {}
     marks = db.placeholders(ids)
@@ -110,16 +156,31 @@ def _aggregates(ids: list[str]) -> dict[str, dict[str, Any]]:
           LEFT JOIN {_ATTENDED} a
                  ON a.meeting_id = CAST(i.meeting_id AS UNSIGNED)
                 AND a.mid = i.membership_id
-         WHERE i.meeting_id IN ({marks})
+         WHERE i.meeting_id IN ({marks}) AND {access.invitee(scope)}
          GROUP BY i.meeting_id""", tuple(ids)):
         agg[str(r["meeting_id"])].update(invitees=r["invitees"], attendees=r["attendees"])
 
-    sql = _LIGHT_AGGREGATES.format(marks=marks, feedback=_FEEDBACK)
-    for r in db.rows(sql, tuple(ids) * 6):
+    parts, args = [], []
+    for level, level_ids in _by_level(meeting_rows).items():
+        parts.append(_LIGHT_AGGREGATES.format(
+            marks=db.placeholders(level_ids),
+            feedback=_FEEDBACK,
+            attendance=access.via_schedule(scope, level, "ma", "schedule_id"),
+            resolutions=access.via_schedule(scope, level, "mres", "scheduled_id"),
+            remarks=access.via_conducted(scope, level, "mr"),
+            captures=access.feedback(scope, "f"),
+        ))
+        args.extend(tuple(level_ids) * 4)
+    for r in db.rows(" UNION ALL ".join(parts), tuple(args)):
         slot = agg.get(str(r["id"]))
         if slot is None:
             continue
         slot.update(zip(_LIGHT_KEYS[r["src"]], (r["a"], r["b"], r["c"])))
+
+    for mid, stats in _schedule_stats(meeting_rows, scope).items():
+        agg.setdefault(mid, {}).update(stats)
+    for mid, stats in _conducted_stats(meeting_rows, scope).items():
+        agg.setdefault(mid, {}).update(stats)
 
     return agg
 
@@ -130,11 +191,18 @@ def _aggregates(ids: list[str]) -> dict[str, dict[str, Any]]:
 # Every branch names its own columns: a UNION takes them from whichever branch
 # comes first, and the first one here depends on which levels the meeting list
 # holds — aliasing only one of them broke any list without a Unit meeting.
-_ROSTER_SIZES = {
-    "Unit": "SELECT 'Unit' AS level, COUNT(DISTINCT unit_id) AS n FROM booth WHERE publication_id = %s",
-    "AC": "SELECT 'AC' AS level, COUNT(*) AS n FROM assembly",
-    "PC": "SELECT 'PC' AS level, COUNT(*) AS n FROM parliament",
-}
+# A function rather than a dict because each roster shrinks to the assemblies
+# this caller holds: "not scheduled" counts a meeting against every location it
+# could have covered, and a location the caller cannot see is not one of them.
+def _roster_size_sql(level: str, scope: Scope) -> str:
+    if level == "Unit":
+        return (
+            "SELECT 'Unit' AS level, COUNT(DISTINCT b.unit_id) AS n FROM booth b "
+            f"WHERE b.publication_id = %s AND {access.booth(scope, 'b')}"
+        )
+    if level == "AC":
+        return f"SELECT 'AC' AS level, COUNT(*) AS n FROM assembly a WHERE {access.assembly(scope, 'a')}"
+    return f"SELECT 'PC' AS level, COUNT(*) AS n FROM parliament p WHERE {access.parliament(scope, 'p')}"
 
 # How each level's `meeting_schedules.entity_id` resolves to a roster row. The
 # cast stays on the schedules side so the target table's own key still indexes
@@ -147,7 +215,7 @@ _ROSTER_JOINS = {
 }
 
 
-def _matched_counts(by_level: dict[str, list[str]]) -> dict[str, dict[str, int]]:
+def _matched_counts(by_level: dict[str, list[str]], scope: Scope) -> dict[str, dict[str, int]]:
     """Per level and meeting id: how many *distinct* roster locations that
     meeting's own `meeting_schedules` rows land on, via joins the database can
     index rather than a roster fetched whole into Python and diffed row by row.
@@ -164,6 +232,7 @@ def _matched_counts(by_level: dict[str, list[str]]) -> dict[str, dict[str, int]]
               FROM meeting_schedules s
               {join}
              WHERE s.meeting_id IN ({db.placeholders(ids)})
+               AND {access.schedules(scope, level, 's')}
              GROUP BY s.meeting_id""")
         if needs_publication:
             args.append(config.UNIT_PUBLICATION_ID)
@@ -175,7 +244,70 @@ def _matched_counts(by_level: dict[str, list[str]]) -> dict[str, dict[str, int]]
     return out
 
 
-def _not_scheduled_counts(meeting_rows: list[dict[str, Any]]) -> dict[str, int]:
+def _schedule_stats(meeting_rows: list[dict[str, Any]], scope: Scope) -> dict[str, dict[str, int]]:
+    """Per meeting: `units` and `unitsCompleted`, scoped to the current
+    roster — the App-side twin of `_matched_counts`, with the status split
+    added so it can feed `agg` directly.
+
+    Scoped for the same reason `_not_scheduled_counts` scopes its own gap
+    figure: a `meeting_schedules` row whose `entity_id` has since fallen out
+    of the roster (an old-publication unit, a mandal no longer enrolled)
+    can't be Conducted or Not Conducted on this card either — it isn't part
+    of "this level's roster" any more, on either side of the split. Without
+    this, Conducted + Not Conducted + Not Updated could run over the roster
+    size by however many such rows a meeting happened to carry.
+    """
+    by_level = _by_level(meeting_rows)
+
+    out: dict[str, dict[str, int]] = {}
+
+    joined = {lvl: ids for lvl, ids in by_level.items() if lvl in _ROSTER_JOINS}
+    if joined:
+        parts, args = [], []
+        for level, ids in joined.items():
+            join, needs_publication = _ROSTER_JOINS[level]
+            # `COUNT(DISTINCT entity_id)`, not `COUNT(*)`: at Unit level the
+            # join fans out through `booth` (many booths per unit, all
+            # sharing a publication_id), so a raw row count/SUM would
+            # multiply a unit's single schedule row by however many booths
+            # it has — the same reason `_matched_counts` counts DISTINCT.
+            parts.append(f"""
+                SELECT s.meeting_id AS id, COUNT(DISTINCT s.entity_id) AS matched,
+                       COUNT(DISTINCT CASE WHEN s.status IN (1, 2) THEN s.entity_id END) AS completed
+                  FROM meeting_schedules s
+                  {join}
+                 WHERE s.meeting_id IN ({db.placeholders(ids)})
+                   AND {access.schedules(scope, level, 's')}
+                 GROUP BY s.meeting_id""")
+            if needs_publication:
+                args.append(config.UNIT_PUBLICATION_ID)
+            args.extend(ids)
+        for r in db.rows(" UNION ALL ".join(parts), tuple(args)):
+            out[str(r["id"])] = {"units": r["matched"], "unitsCompleted": r["completed"] or 0}
+
+    mandal_ids = by_level.get("Mandal", [])
+    if mandal_ids:
+        marks = db.placeholders(mandal_ids)
+        roster_ids = _mandal_roster_ids(scope)
+        tally: dict[str, list[int]] = {}
+        for r in db.rows(
+            f"SELECT s.meeting_id, s.entity_id, s.status FROM meeting_schedules s "
+            f"WHERE s.meeting_id IN ({marks}) AND {access.schedules(scope, 'Mandal', 's')}",
+            tuple(mandal_ids),
+        ):
+            if str(r["entity_id"]) not in roster_ids:
+                continue
+            slot = tally.setdefault(str(r["meeting_id"]), [0, 0])
+            slot[0] += 1
+            if r["status"] in (1, 2):
+                slot[1] += 1
+        for mid, (matched, completed) in tally.items():
+            out[mid] = {"units": matched, "unitsCompleted": completed}
+
+    return out
+
+
+def _not_scheduled_counts(meeting_rows: list[dict[str, Any]], scope: Scope) -> dict[str, int]:
     """Per meeting: how many of its level's roster locations have no
     `meeting_schedules` row at all — the same figure `/schedules/not-scheduled`
     drills down to rows, computed the same way so the two always foot to each
@@ -196,9 +328,7 @@ def _not_scheduled_counts(meeting_rows: list[dict[str, Any]]) -> dict[str, int]:
     schema with no shared id space to join on, so that one id set still has
     to come across and get diffed in Python — cheap on its own (936 rows).
     """
-    by_level: dict[str, list[str]] = {}
-    for r in meeting_rows:
-        by_level.setdefault(adapt.level_code(r["level_name"]), []).append(str(r["id"]))
+    by_level = _by_level(meeting_rows)
 
     out: dict[str, int] = {}
 
@@ -206,14 +336,14 @@ def _not_scheduled_counts(meeting_rows: list[dict[str, Any]]) -> dict[str, int]:
     if joined:
         sizes_sql, sizes_args = [], []
         for level in joined:
-            sizes_sql.append(_ROSTER_SIZES[level])
+            sizes_sql.append(_roster_size_sql(level, scope))
             if level == "Unit":
                 sizes_args.append(config.UNIT_PUBLICATION_ID)
         sizes = {
             r["level"]: r["n"]
             for r in db.rows(" UNION ALL ".join(sizes_sql), tuple(sizes_args))
         }
-        matched = _matched_counts(joined)
+        matched = _matched_counts(joined, scope)
         for level, ids in joined.items():
             for mid in ids:
                 out[mid] = max(sizes.get(level, 0) - matched[level].get(mid, 0), 0)
@@ -221,10 +351,11 @@ def _not_scheduled_counts(meeting_rows: list[dict[str, Any]]) -> dict[str, int]:
     mandal_ids = by_level.get("Mandal", [])
     if mandal_ids:
         marks = db.placeholders(mandal_ids)
-        roster_ids = {str(r["location_id"]) for r in db.rows(_COMMITTEE_LOCATIONS) if r["location_id"] is not None}
+        roster_ids = _mandal_roster_ids(scope)
         scheduled_by_meeting: dict[str, set[str]] = {}
         for r in db.rows(
-            f"SELECT meeting_id, entity_id FROM meeting_schedules WHERE meeting_id IN ({marks})",
+            f"SELECT s.meeting_id, s.entity_id FROM meeting_schedules s "
+            f"WHERE s.meeting_id IN ({marks}) AND {access.schedules(scope, 'Mandal', 's')}",
             tuple(mandal_ids),
         ):
             scheduled_by_meeting.setdefault(str(r["meeting_id"]), set()).add(str(r["entity_id"]))
@@ -247,7 +378,7 @@ _PC_ROSTER_JOINS = {
 }
 
 
-def _pc_matched_counts(by_level: dict[str, list[str]]) -> dict[str, dict[str, int]]:
+def _pc_matched_counts(by_level: dict[str, list[str]], scope: Scope) -> dict[str, dict[str, int]]:
     """Per level and meeting id: how many distinct roster locations that
     meeting's own `meeting_conducted_status` rows land on — the PC-side twin
     of `_matched_counts`."""
@@ -259,6 +390,7 @@ def _pc_matched_counts(by_level: dict[str, list[str]]) -> dict[str, dict[str, in
               FROM meeting_conducted_status mcs
               {join}
              WHERE mcs.meeting_id IN ({db.placeholders(ids)})
+               AND {access.conducted(scope, level, 'mcs')}
              GROUP BY mcs.meeting_id""")
         if needs_publication:
             args.append(config.UNIT_PUBLICATION_ID)
@@ -270,7 +402,66 @@ def _pc_matched_counts(by_level: dict[str, list[str]]) -> dict[str, dict[str, in
     return out
 
 
-def _pc_not_updated_counts(meeting_rows: list[dict[str, Any]]) -> dict[str, int]:
+def _conducted_stats(meeting_rows: list[dict[str, Any]], scope: Scope) -> dict[str, dict[str, int]]:
+    """Per meeting: `pcTotal`, `pcConducted` and `pcNull`, scoped to the
+    current roster — the PC-side twin of `_schedule_stats`, same reasoning:
+    a `meeting_conducted_status` row for a location that's since fallen out
+    of the roster can't be Conducted or Not conducted on this card either.
+    """
+    by_level = _by_level(meeting_rows)
+
+    out: dict[str, dict[str, int]] = {}
+
+    joined = {lvl: ids for lvl, ids in by_level.items() if lvl in _PC_ROSTER_JOINS}
+    if joined:
+        parts, args = [], []
+        for level, ids in joined.items():
+            join, needs_publication = _PC_ROSTER_JOINS[level]
+            # `COUNT(DISTINCT location_id)`, not `COUNT(*)` — same booth
+            # fan-out risk as `_schedule_stats` at Unit level.
+            parts.append(f"""
+                SELECT mcs.meeting_id AS id, COUNT(DISTINCT mcs.location_id) AS matched,
+                       COUNT(DISTINCT CASE WHEN mcs.is_conducted = 'Y' THEN mcs.location_id END) AS conducted,
+                       COUNT(DISTINCT CASE WHEN mcs.is_conducted IS NULL THEN mcs.location_id END) AS is_null
+                  FROM meeting_conducted_status mcs
+                  {join}
+                 WHERE mcs.meeting_id IN ({db.placeholders(ids)})
+                   AND {access.conducted(scope, level, 'mcs')}
+                 GROUP BY mcs.meeting_id""")
+            if needs_publication:
+                args.append(config.UNIT_PUBLICATION_ID)
+            args.extend(ids)
+        for r in db.rows(" UNION ALL ".join(parts), tuple(args)):
+            out[str(r["id"])] = {
+                "pcTotal": r["matched"], "pcConducted": r["conducted"] or 0, "pcNull": r["is_null"] or 0
+            }
+
+    mandal_ids = by_level.get("Mandal", [])
+    if mandal_ids:
+        marks = db.placeholders(mandal_ids)
+        roster_ids = _mandal_roster_ids(scope)
+        tally: dict[str, list[int]] = {}
+        for r in db.rows(
+            f"SELECT mcs.meeting_id, mcs.location_id, mcs.is_conducted "
+            f"FROM meeting_conducted_status mcs "
+            f"WHERE mcs.meeting_id IN ({marks}) AND {access.conducted(scope, 'Mandal', 'mcs')}",
+            tuple(mandal_ids),
+        ):
+            if str(r["location_id"]) not in roster_ids:
+                continue
+            slot = tally.setdefault(str(r["meeting_id"]), [0, 0, 0])
+            slot[0] += 1
+            if r["is_conducted"] == "Y":
+                slot[1] += 1
+            if r["is_conducted"] is None:
+                slot[2] += 1
+        for mid, (matched, conducted, is_null) in tally.items():
+            out[mid] = {"pcTotal": matched, "pcConducted": conducted, "pcNull": is_null}
+
+    return out
+
+
+def _pc_not_updated_counts(meeting_rows: list[dict[str, Any]], scope: Scope) -> dict[str, int]:
     """Per meeting: how many of its level's roster locations have no
     `meeting_conducted_status` row at all — the PC-side twin of
     `_not_scheduled_counts`, so "PC Not Updated" means the same thing PC-side
@@ -282,9 +473,7 @@ def _pc_not_updated_counts(meeting_rows: list[dict[str, Any]]) -> dict[str, int]
     difference, and Mandal is diffed in Python against `dakavara_pa`'s
     roster since it shares no id space with `mytdp` to join on.
     """
-    by_level: dict[str, list[str]] = {}
-    for r in meeting_rows:
-        by_level.setdefault(adapt.level_code(r["level_name"]), []).append(str(r["id"]))
+    by_level = _by_level(meeting_rows)
 
     out: dict[str, int] = {}
 
@@ -292,14 +481,14 @@ def _pc_not_updated_counts(meeting_rows: list[dict[str, Any]]) -> dict[str, int]
     if joined:
         sizes_sql, sizes_args = [], []
         for level in joined:
-            sizes_sql.append(_ROSTER_SIZES[level])
+            sizes_sql.append(_roster_size_sql(level, scope))
             if level == "Unit":
                 sizes_args.append(config.UNIT_PUBLICATION_ID)
         sizes = {
             r["level"]: r["n"]
             for r in db.rows(" UNION ALL ".join(sizes_sql), tuple(sizes_args))
         }
-        matched = _pc_matched_counts(joined)
+        matched = _pc_matched_counts(joined, scope)
         for level, ids in joined.items():
             for mid in ids:
                 out[mid] = max(sizes.get(level, 0) - matched[level].get(mid, 0), 0)
@@ -307,10 +496,11 @@ def _pc_not_updated_counts(meeting_rows: list[dict[str, Any]]) -> dict[str, int]
     mandal_ids = by_level.get("Mandal", [])
     if mandal_ids:
         marks = db.placeholders(mandal_ids)
-        roster_ids = {str(r["location_id"]) for r in db.rows(_COMMITTEE_LOCATIONS) if r["location_id"] is not None}
+        roster_ids = _mandal_roster_ids(scope)
         covered_by_meeting: dict[str, set[str]] = {}
         for r in db.rows(
-            f"SELECT meeting_id, location_id FROM meeting_conducted_status WHERE meeting_id IN ({marks})",
+            f"SELECT mcs.meeting_id, mcs.location_id FROM meeting_conducted_status mcs "
+            f"WHERE mcs.meeting_id IN ({marks}) AND {access.conducted(scope, 'Mandal', 'mcs')}",
             tuple(mandal_ids),
         ):
             covered_by_meeting.setdefault(str(r["meeting_id"]), set()).add(str(r["location_id"]))
@@ -325,8 +515,14 @@ def _pc_not_updated_counts(meeting_rows: list[dict[str, Any]]) -> dict[str, int]
 def list_meetings(
     from_date: str = Query(..., alias="from", description="YYYY-MM-DD"),
     to_date: str = Query(..., alias="to", description="YYYY-MM-DD"),
+    scope: Scope = Depends(caller_scope),
 ) -> list[dict[str, Any]]:
-    """Committee meetings held in a period, oldest first."""
+    """Committee meetings held in a period, oldest first.
+
+    A meeting is one row for the whole state, so the list itself is not filtered
+    — every figure hanging off it is. A caller granted one assembly sees the same
+    meetings, counted over their own assembly alone.
+    """
     rows = db.rows(
         _MEETING_COLS + """
          WHERE m.meeting_type_id = %s AND m.meeting_date BETWEEN %s AND %s
@@ -336,9 +532,9 @@ def list_meetings(
     # None of the three groups needs another's answer and each is seconds of
     # database work, so they overlap rather than queue.
     agg, not_scheduled, pc_not_updated = db.parallel(
-        lambda: _aggregates([str(r["id"]) for r in rows]),
-        lambda: _not_scheduled_counts(rows),
-        lambda: _pc_not_updated_counts(rows),
+        lambda: _aggregates(rows, scope),
+        lambda: _not_scheduled_counts(rows, scope),
+        lambda: _pc_not_updated_counts(rows, scope),
     )
     return [
         adapt.meeting(
@@ -423,9 +619,39 @@ def _unit_lookup(unit_ids: list[str] | None = None) -> dict[str, dict[str, str]]
     }
 
 
+def _mandal_assembly_lookup(ids: list[str]) -> dict[tuple[str, str], dict[str, str]]:
+    """Per (meeting_id, mandal/town id): the assembly and parliament the
+    App-side `meeting_schedules` row for that same location recorded in its
+    own `assembly_id` — the only place that mapping lives, since
+    `meeting_conducted_status` carries no `assembly_id` column of its own
+    (see `_conducted_status_rows`, which was leaving Mandal assembly/
+    parliament blank for exactly that reason). Fetched as its own lookup and
+    applied in Python, the same way `_unit_lookup` and `mandal_locations` are
+    here, rather than joined inline — a location rescheduled more than once
+    for a meeting must not multiply the PC rows it's applied to."""
+    if not ids:
+        return {}
+    marks = db.placeholders(ids)
+    rows = db.rows(
+        f"""SELECT s.meeting_id, s.entity_id, ma.name AS assembly_name, map.parliament_name AS parliament_name
+              FROM meeting_schedules s
+              LEFT JOIN assembly ma ON ma.id = CAST(s.assembly_id AS CHAR)
+              LEFT JOIN parliament map ON map.id = ma.parliament_id
+             WHERE s.meeting_id IN ({marks}) AND s.assembly_id IS NOT NULL""",
+        tuple(ids),
+    )
+    return {
+        (str(r["meeting_id"]), str(r["entity_id"])): {
+            "assembly": r["assembly_name"] or "", "parliament": r["parliament_name"] or ""
+        }
+        for r in rows
+    }
+
+
 def _schedule_rows(
     meeting_ids: str,
     condition: str,
+    scope: Scope,
     *,
     limit: int | None = None,
     offset: int = 0,
@@ -443,9 +669,13 @@ def _schedule_rows(
     if not ids:
         return {"total": 0, "rows": [], "limit": limit, "offset": offset}
     marks = db.placeholders(ids)
+    spanning = access.schedules_spanning(scope, "s")
     total = db.rows(
-        f"""SELECT COUNT(*) AS c FROM meeting_schedules s
-             WHERE s.meeting_id IN ({marks}) AND {condition}""",
+        f"""SELECT COUNT(*) AS c
+              FROM meeting_schedules s
+              JOIN meetings mt ON mt.id = s.meeting_id
+              LEFT JOIN meeting_levels ml ON ml.id = mt.meeting_level_id
+             WHERE s.meeting_id IN ({marks}) AND {condition} AND {spanning}""",
         tuple(ids),
     )[0]["c"]
     if not total:
@@ -464,7 +694,7 @@ def _schedule_rows(
               JOIN meetings mt ON mt.id = s.meeting_id
               LEFT JOIN meeting_levels ml ON ml.id = mt.meeting_level_id
               LEFT JOIN role r ON r.id = s.role_id
-             WHERE s.meeting_id IN ({marks}) AND {condition}
+             WHERE s.meeting_id IN ({marks}) AND {condition} AND {spanning}
              ORDER BY s.meeting_id, s.id{lim_sql}""",
         tuple(args),
     )
@@ -549,6 +779,23 @@ def _schedule_rows(
                 mandal_assembly[str(r["id"])] = r["name"] or ""
                 mandal_parliament[str(r["id"])] = r["parliament_name"] or ""
 
+    def _on_roster(r: dict[str, Any]) -> bool:
+        level = adapt.level_code(r["level_name"])
+        loc = str(r["entity_id"]) if r["entity_id"] is not None else ""
+        if level == "PC":
+            return loc in parliament_names
+        if level == "AC":
+            return loc in assembly_names
+        if level == "Mandal":
+            return loc in mandal_locations
+        return loc in unit_lookup
+
+    # Same roster scoping as `_schedule_stats` (which this must foot to): a
+    # row for a location that's since fallen off the current roster — an
+    # old-publication unit, a mandal no longer enrolled — isn't part of any
+    # App-side figure any more, this list included.
+    rows = [r for r in rows if _on_roster(r)]
+
     def _fields(r: dict[str, Any]) -> dict[str, str]:
         level = adapt.level_code(r["level_name"])
         loc = str(r["entity_id"]) if r["entity_id"] is not None else ""
@@ -596,6 +843,7 @@ def _schedule_rows(
 def _conducted_status_rows(
     meeting_ids: str,
     condition: str,
+    scope: Scope,
     *,
     limit: int | None = None,
     offset: int = 0,
@@ -604,14 +852,21 @@ def _conducted_status_rows(
 
     Lean select + level-scoped name batches (same shape as `_schedule_rows`).
     `limit`/`offset` page MCS rows and only resolve place names for that page.
+
+    Mandal assembly/parliament are backfilled from `_mandal_assembly_lookup` —
+    the same meeting's own `meeting_schedules` row for that location.
     """
     ids = _ids(meeting_ids)
     if not ids:
         return {"total": 0, "rows": [], "limit": limit, "offset": offset}
     marks = db.placeholders(ids)
+    spanning = access.conducted_spanning(scope, "mcs")
     total = db.rows(
-        f"""SELECT COUNT(*) AS c FROM meeting_conducted_status mcs
-             WHERE mcs.meeting_id IN ({marks}) AND {condition}""",
+        f"""SELECT COUNT(*) AS c
+              FROM meeting_conducted_status mcs
+              JOIN meetings mt ON mt.id = mcs.meeting_id
+              LEFT JOIN meeting_levels ml ON ml.id = mt.meeting_level_id
+             WHERE mcs.meeting_id IN ({marks}) AND {condition} AND {spanning}""",
         tuple(ids),
     )[0]["c"]
     if not total:
@@ -630,7 +885,7 @@ def _conducted_status_rows(
               JOIN meetings mt ON mt.id = mcs.meeting_id
               LEFT JOIN meeting_levels ml ON ml.id = mt.meeting_level_id
               LEFT JOIN role r ON r.id = mcs.role_id
-             WHERE mcs.meeting_id IN ({marks}) AND {condition}
+             WHERE mcs.meeting_id IN ({marks}) AND {condition} AND {spanning}
              ORDER BY mcs.meeting_id, mcs.meeting_conducted_status_id{lim_sql}""",
         tuple(args),
     )
@@ -682,6 +937,26 @@ def _conducted_status_rows(
             if r["location_id"] is not None
         }
 
+    mandal_assembly: dict[tuple[str, str], dict[str, str]] = {}
+    if "Mandal" in levels:
+        mandal_assembly = _mandal_assembly_lookup(ids)
+
+    def _on_roster(r: dict[str, Any]) -> bool:
+        level = adapt.level_code(r["level_name"])
+        loc = str(r["location_id"]) if r["location_id"] is not None else ""
+        if level == "PC":
+            return loc in parliament_names
+        if level == "AC":
+            return loc in assembly_names
+        if level == "Mandal":
+            return loc in mandal_locations
+        return loc in unit_lookup
+
+    # Same roster scoping as `_conducted_stats` (which this must foot to): a
+    # row for a location that's since fallen off the current roster isn't
+    # part of any PC-side figure any more, this list included.
+    rows = [r for r in rows if _on_roster(r)]
+
     def _fields(r: dict[str, Any]) -> dict[str, str]:
         level = adapt.level_code(r["level_name"])
         loc = str(r["location_id"]) if r["location_id"] is not None else ""
@@ -696,9 +971,10 @@ def _conducted_status_rows(
                 "assembly": "", "parliament": ac_parliament.get(loc, ""),
             }
         if level == "Mandal":
+            info = mandal_assembly.get((str(r["meeting_id"]), str(r["location_id"])), {})
             return {
                 "location": mandal_locations.get(loc) or loc,
-                "assembly": "", "parliament": "",
+                "assembly": info.get("assembly", ""), "parliament": info.get("parliament", ""),
             }
         info = unit_lookup.get(loc, {})
         return {
@@ -728,9 +1004,10 @@ def conducted_schedules(
     meeting_ids: str = Query(..., description="Comma-separated meeting ids"),
     limit: int | None = Query(None, ge=1, le=5000),
     offset: int = Query(0, ge=0),
+    scope: Scope = Depends(caller_scope),
 ) -> dict[str, Any]:
     """`status IN (1, 2)` — the same rows `units.completed` sums per meeting."""
-    return _schedule_rows(meeting_ids, "s.status IN (1, 2)", limit=limit, offset=offset)
+    return _schedule_rows(meeting_ids, "s.status IN (1, 2)", scope, limit=limit, offset=offset)
 
 
 @router.get("/schedules/not-updated")
@@ -738,12 +1015,13 @@ def not_updated_schedules(
     meeting_ids: str = Query(..., description="Comma-separated meeting ids"),
     limit: int | None = Query(None, ge=1, le=5000),
     offset: int = Query(0, ge=0),
+    scope: Scope = Depends(caller_scope),
 ) -> dict[str, Any]:
     """`status = 0` — the same rows `units.notConducted` sums per meeting."""
-    return _schedule_rows(meeting_ids, "s.status = 0", limit=limit, offset=offset)
+    return _schedule_rows(meeting_ids, "s.status = 0", scope, limit=limit, offset=offset)
 
 
-def _level_roster(level: str) -> list[tuple[str, str, str, str]]:
+def _level_roster(level: str, scope: Scope) -> list[tuple[str, str, str, str]]:
     """(id, name, assembly, parliament) for every schedulable location at a
     level — the same universe `_not_scheduled_counts` measures a meeting
     against, just with the id kept alongside the name instead of collapsed
@@ -762,10 +1040,10 @@ def _level_roster(level: str) -> list[tuple[str, str, str, str]]:
     """
     if level == "Unit":
         unit_rows = db.rows(
-            """SELECT DISTINCT UT.id AS unit_id, UT.code AS unit_code
+            f"""SELECT DISTINCT UT.id AS unit_id, UT.code AS unit_code
                  FROM booth B
                  JOIN unit UT ON B.unit_id = UT.id
-                WHERE B.publication_id = %s""",
+                WHERE B.publication_id = %s AND {access.booth(scope, 'B')}""",
             (config.UNIT_PUBLICATION_ID,),
         )
         lookup = _unit_lookup([str(r["unit_id"]) for r in unit_rows])
@@ -788,15 +1066,19 @@ def _level_roster(level: str) -> list[tuple[str, str, str, str]]:
         return [
             (str(r["id"]), r["name"] or "", "", r["parliament_name"] or "")
             for r in db.rows(
-                """SELECT a.id, a.name, p.parliament_name
+                f"""SELECT a.id, a.name, p.parliament_name
                      FROM assembly a
-                     LEFT JOIN parliament p ON p.id = a.parliament_id"""
+                     LEFT JOIN parliament p ON p.id = a.parliament_id
+                    WHERE {access.assembly(scope, 'a')}"""
             )
         ]
     if level == "PC":
         return [
             (str(r["id"]), r["parliament_name"] or "", "", "")
-            for r in db.rows("SELECT id, parliament_name FROM parliament")
+            for r in db.rows(
+                f"SELECT p.id, p.parliament_name FROM parliament p "
+                f"WHERE {access.parliament(scope, 'p')}"
+            )
         ]
     return []
 
@@ -806,6 +1088,7 @@ def not_scheduled_schedules(
     meeting_ids: str = Query(..., description="Comma-separated meeting ids"),
     limit: int | None = Query(None, ge=1, le=5000),
     offset: int = Query(0, ge=0),
+    scope: Scope = Depends(caller_scope),
 ) -> dict[str, Any]:
     """Roster locations with no `meeting_schedules` row at all for a meeting —
     the same figure `notScheduled` sums per meeting, drilled down to rows.
@@ -830,7 +1113,10 @@ def not_scheduled_schedules(
         tuple(ids),
     )
     scheduled = db.rows(
-        f"SELECT meeting_id, entity_id FROM meeting_schedules WHERE meeting_id IN ({marks})",
+        f"SELECT s.meeting_id, s.entity_id FROM meeting_schedules s "
+        f"JOIN meetings mt ON mt.id = s.meeting_id "
+        f"LEFT JOIN meeting_levels ml ON ml.id = mt.meeting_level_id "
+        f"WHERE s.meeting_id IN ({marks}) AND {access.schedules_spanning(scope, 's')}",
         tuple(ids),
     )
     scheduled_by_meeting: dict[str, set[str]] = {}
@@ -849,10 +1135,10 @@ def not_scheduled_schedules(
                 unit_roll = [
                     (str(r["unit_id"]), r["unit_code"] or "")
                     for r in db.rows(
-                        """SELECT DISTINCT UT.id AS unit_id, UT.code AS unit_code
+                        f"""SELECT DISTINCT UT.id AS unit_id, UT.code AS unit_code
                              FROM booth B
                              JOIN unit UT ON B.unit_id = UT.id
-                            WHERE B.publication_id = %s""",
+                            WHERE B.publication_id = %s AND {access.booth(scope, 'B')}""",
                         (config.UNIT_PUBLICATION_ID,),
                     )
                 ]
@@ -863,7 +1149,7 @@ def not_scheduled_schedules(
             )
             continue
         if level not in roster_cache:
-            roster_cache[level] = _level_roster(level)
+            roster_cache[level] = _level_roster(level, scope)
         all_rows.extend(
             {"meetingId": mid, "location": name, "assembly": assembly, "parliament": parliament}
             for loc_id, name, assembly, parliament in roster_cache[level]
@@ -891,6 +1177,7 @@ def pc_never_updated_schedules(
     meeting_ids: str = Query(..., description="Comma-separated meeting ids"),
     limit: int | None = Query(None, ge=1, le=5000),
     offset: int = Query(0, ge=0),
+    scope: Scope = Depends(caller_scope),
 ) -> dict[str, Any]:
     """Roster locations with no `meeting_conducted_status` row at all for a
     meeting — the same figure PC Status' `notUpdated` sums per meeting,
@@ -910,7 +1197,10 @@ def pc_never_updated_schedules(
         tuple(ids),
     )
     covered = db.rows(
-        f"SELECT meeting_id, location_id FROM meeting_conducted_status WHERE meeting_id IN ({marks})",
+        f"SELECT mcs.meeting_id, mcs.location_id FROM meeting_conducted_status mcs "
+        f"JOIN meetings mt ON mt.id = mcs.meeting_id "
+        f"LEFT JOIN meeting_levels ml ON ml.id = mt.meeting_level_id "
+        f"WHERE mcs.meeting_id IN ({marks}) AND {access.conducted_spanning(scope, 'mcs')}",
         tuple(ids),
     )
     covered_by_meeting: dict[str, set[str]] = {}
@@ -929,10 +1219,10 @@ def pc_never_updated_schedules(
                 unit_roll = [
                     (str(r["unit_id"]), r["unit_code"] or "")
                     for r in db.rows(
-                        """SELECT DISTINCT UT.id AS unit_id, UT.code AS unit_code
+                        f"""SELECT DISTINCT UT.id AS unit_id, UT.code AS unit_code
                              FROM booth B
                              JOIN unit UT ON B.unit_id = UT.id
-                            WHERE B.publication_id = %s""",
+                            WHERE B.publication_id = %s AND {access.booth(scope, 'B')}""",
                         (config.UNIT_PUBLICATION_ID,),
                     )
                 ]
@@ -943,7 +1233,7 @@ def pc_never_updated_schedules(
             )
             continue
         if level not in roster_cache:
-            roster_cache[level] = _level_roster(level)
+            roster_cache[level] = _level_roster(level, scope)
         all_rows.extend(
             {"meetingId": mid, "location": name, "assembly": assembly, "parliament": parliament}
             for loc_id, name, assembly, parliament in roster_cache[level]
@@ -971,9 +1261,10 @@ def pc_completed_schedules(
     meeting_ids: str = Query(..., description="Comma-separated meeting ids"),
     limit: int | None = Query(None, ge=1, le=5000),
     offset: int = Query(0, ge=0),
+    scope: Scope = Depends(caller_scope),
 ) -> dict[str, Any]:
     """`is_conducted = 'Y'` — the same rows PC Status' Completed sums."""
-    return _conducted_status_rows(meeting_ids, "is_conducted = 'Y'", limit=limit, offset=offset)
+    return _conducted_status_rows(meeting_ids, "is_conducted = 'Y'", scope, limit=limit, offset=offset)
 
 
 @router.get("/schedules/pc-not-completed")
@@ -981,12 +1272,14 @@ def pc_not_completed_schedules(
     meeting_ids: str = Query(..., description="Comma-separated meeting ids"),
     limit: int | None = Query(None, ge=1, le=5000),
     offset: int = Query(0, ge=0),
+    scope: Scope = Depends(caller_scope),
 ) -> dict[str, Any]:
-    """`is_conducted IS NULL OR 'N'` — PC Status' Not conducted, the combined
-    figure. Broader than `/pc-not-updated`, which is NULL alone."""
-    return _conducted_status_rows(
-        meeting_ids, "is_conducted IS NULL OR is_conducted = 'N'", limit=limit, offset=offset
-    )
+    """`is_conducted IS NULL` — PC Status' Not conducted, the same rows
+    `adapt.meeting`'s `pc.notConducted` sums per meeting (its `pcNull`
+    aggregate). An explicit 'N' is its own rare state and is not counted
+    here — same condition `/pc-not-updated` uses; kept as two routes since
+    the frontend already calls this one for that stat's drill-down."""
+    return _conducted_status_rows(meeting_ids, "is_conducted IS NULL", scope, limit=limit, offset=offset)
 
 
 @router.get("/schedules/pc-not-updated")
@@ -994,12 +1287,13 @@ def pc_not_updated_schedules(
     meeting_ids: str = Query(..., description="Comma-separated meeting ids"),
     limit: int | None = Query(None, ge=1, le=5000),
     offset: int = Query(0, ge=0),
+    scope: Scope = Depends(caller_scope),
 ) -> dict[str, Any]:
     """`is_conducted IS NULL` — never touched, kept apart from an explicit 'N'."""
-    return _conducted_status_rows(meeting_ids, "is_conducted IS NULL", limit=limit, offset=offset)
+    return _conducted_status_rows(meeting_ids, "is_conducted IS NULL", scope, limit=limit, offset=offset)
 
 
-def _remark_rows(meeting_ids: str) -> dict[str, Any]:
+def _remark_rows(meeting_ids: str, scope: Scope) -> dict[str, Any]:
     """Row-level `meeting_remark` detail — the PC in-charge's own written note
     against a conducted-status row, alongside its `remarks_category` tag."""
     ids = _ids(meeting_ids)
@@ -1013,11 +1307,14 @@ def _remark_rows(meeting_ids: str) -> dict[str, Any]:
               FROM meeting_remark mr
               JOIN meeting_conducted_status mcs
                 ON mcs.meeting_conducted_status_id = mr.meeting_conducted_status_id
+              JOIN meetings mt ON mt.id = mr.meeting_id
+              LEFT JOIN meeting_levels ml ON ml.id = mt.meeting_level_id
               LEFT JOIN role r ON r.id = mcs.role_id
               LEFT JOIN unit u ON u.id = mcs.location_id
               LEFT JOIN remarks_category rc ON rc.remarks_category_id = mr.remarks_category_id
              WHERE mr.meeting_id IN ({marks})
                AND mr.remarks IS NOT NULL AND mr.remarks <> ''
+               AND {access.conducted_spanning(scope, 'mcs')}
              ORDER BY mr.meeting_id, mr.meeting_remark_id""",
         tuple(ids),
     )
@@ -1040,9 +1337,10 @@ def _remark_rows(meeting_ids: str) -> dict[str, Any]:
 @router.get("/schedules/pc-remarks")
 def pc_remarks_schedules(
     meeting_ids: str = Query(..., description="Comma-separated meeting ids"),
+    scope: Scope = Depends(caller_scope),
 ) -> dict[str, Any]:
     """Every non-empty PC remark — the same rows `pcRemarks` sums per meeting."""
-    return _remark_rows(meeting_ids)
+    return _remark_rows(meeting_ids, scope)
 
 
 @router.get("/{meeting_id}/schedule-summary")
@@ -1050,6 +1348,7 @@ def schedule_summary(
     meeting_id: str,
     limit: int | None = Query(None, ge=1, le=5000, description="Page size; omit for all rows"),
     offset: int = Query(0, ge=0),
+    scope: Scope = Depends(caller_scope),
 ) -> dict[str, Any]:
     """The App & PC summary panel — one row per `meeting_conducted_status`.
 
@@ -1072,12 +1371,14 @@ def schedule_summary(
     level = adapt.level_code(meta["level_name"])
 
     def _mcs() -> list[dict[str, Any]]:
-        sql = """SELECT c.meeting_conducted_status_id AS id, c.location_id,
+        sql = f"""SELECT c.meeting_conducted_status_id AS id, c.location_id,
                         c.is_conducted, mr.remarks_category_id, mr.remarks
                    FROM meeting_conducted_status c
+                   JOIN meetings mt ON mt.id = c.meeting_id
+                   LEFT JOIN meeting_levels ml ON ml.id = mt.meeting_level_id
                    LEFT JOIN meeting_remark mr
                           ON mr.meeting_conducted_status_id = c.meeting_conducted_status_id
-                  WHERE c.meeting_id = %s
+                  WHERE c.meeting_id = %s AND {access.conducted_spanning(scope, 'c')}
                   ORDER BY c.meeting_conducted_status_id"""
         args: list[Any] = [meeting_id]
         if limit is not None:
@@ -1088,7 +1389,10 @@ def schedule_summary(
     def _total() -> int:
         return int(
             db.scalar(
-                "SELECT COUNT(*) FROM meeting_conducted_status WHERE meeting_id = %s",
+                f"""SELECT COUNT(*) FROM meeting_conducted_status c
+                      JOIN meetings mt ON mt.id = c.meeting_id
+                      LEFT JOIN meeting_levels ml ON ml.id = mt.meeting_level_id
+                     WHERE c.meeting_id = %s AND {access.conducted_spanning(scope, 'c')}""",
                 (meeting_id,),
             )
             or 0
@@ -1257,16 +1561,26 @@ class ConductedRemarkIn(BaseModel):
 
 @router.put("/conducted-status/{status_id}/remark")
 def save_conducted_remark(
-    status_id: str, body: ConductedRemarkIn = Body(...)
+    status_id: str,
+    body: ConductedRemarkIn = Body(...),
+    scope: Scope = Depends(caller_scope),
 ) -> dict[str, Any]:
     """Record (or clear) the PC in-charge's remark against one conducted-status row.
 
     `meeting_remark` is exclusive to this app and carries no soft-delete column
     the way `feedback_comment` does, so a save just updates the one row for this
     status id in place — the same row a fresh `schedule-summary` fetch reads.
+
+    The scope is applied to the *lookup*, not checked after it: a status row
+    outside the caller's assemblies is one they were never shown, so it reads as
+    unknown here rather than as a refusal that confirms it exists.
     """
     status = db.one(
-        "SELECT meeting_id FROM meeting_conducted_status WHERE meeting_conducted_status_id = %s",
+        f"""SELECT mcs.meeting_id FROM meeting_conducted_status mcs
+              JOIN meetings mt ON mt.id = mcs.meeting_id
+              LEFT JOIN meeting_levels ml ON ml.id = mt.meeting_level_id
+             WHERE mcs.meeting_conducted_status_id = %s
+               AND {access.conducted_spanning(scope, 'mcs')}""",
         (status_id,),
     )
     if status is None:
@@ -1295,14 +1609,14 @@ def save_conducted_remark(
 
 
 @router.get("/{meeting_id}")
-def get_meeting(meeting_id: str) -> dict[str, Any]:
+def get_meeting(meeting_id: str, scope: Scope = Depends(caller_scope)) -> dict[str, Any]:
     row = db.one(_MEETING_COLS + " WHERE m.id = %s", (meeting_id,))
     if row is None:
         raise HTTPException(status_code=404, detail="Unknown meeting")
     agg_all, not_scheduled_all, pc_not_updated_all = db.parallel(
-        lambda: _aggregates([str(row["id"])]),
-        lambda: _not_scheduled_counts([row]),
-        lambda: _pc_not_updated_counts([row]),
+        lambda: _aggregates([row], scope),
+        lambda: _not_scheduled_counts([row], scope),
+        lambda: _pc_not_updated_counts([row], scope),
     )
     agg = agg_all.get(str(row["id"]), {})
     not_scheduled = not_scheduled_all.get(str(row["id"]), 0)
@@ -1336,9 +1650,17 @@ def list_members(
     ac: str | None = Query(None, description="Assembly name, exact match"),
     limit: int = Query(config.MAX_PAGE_SIZE, ge=1, le=config.MAX_PAGE_SIZE),
     offset: int = Query(0, ge=0),
+    scope: Scope = Depends(caller_scope),
 ) -> dict[str, Any]:
-    """A page of this meeting's invitees, absentees first."""
-    where = "WHERE i.meeting_id = %s" + (" AND i.constituency_name = %s" if ac else "")
+    """A page of this meeting's invitees, absentees first.
+
+    Scoped, so the `ac` filter narrows within the caller's own assemblies and
+    naming one outside them returns nothing rather than someone else's list.
+    """
+    where = (
+        f"WHERE i.meeting_id = %s AND {access.invitee(scope)}"
+        + (" AND i.constituency_name = %s" if ac else "")
+    )
     args: tuple = (meeting_id, ac) if ac else (meeting_id,)
 
     total = db.scalar(f"SELECT COUNT(*) FROM meeting_invitee i {where}", args)
@@ -1349,9 +1671,10 @@ def list_members(
     acs = [
         r["ac"]
         for r in db.rows(
-            """SELECT DISTINCT constituency_name AS ac FROM meeting_invitee
-                WHERE meeting_id = %s AND constituency_name <> ''
-                ORDER BY constituency_name""",
+            f"""SELECT DISTINCT i.constituency_name AS ac FROM meeting_invitee i
+                WHERE i.meeting_id = %s AND i.constituency_name <> ''
+                  AND {access.invitee(scope)}
+                ORDER BY i.constituency_name""",
             (meeting_id,),
         )
     ]
@@ -1374,13 +1697,13 @@ SELECT {{cols}},
         AND f.membership_id = i.membership_id
         AND f.feeback_program_type_id = {config.MEETING_TYPE_ID}
         AND COALESCE(f.is_deleted, 'N') <> 'Y'
- WHERE i.meeting_id = %s
+ WHERE i.meeting_id = %s AND {{invitee}}
  GROUP BY {{group}}
 """
 
 
 @router.get("/{meeting_id}/rollup")
-def meeting_rollup(meeting_id: str) -> dict[str, Any]:
+def meeting_rollup(meeting_id: str, scope: Scope = Depends(caller_scope)) -> dict[str, Any]:
     """This meeting's posture across every PC and AC, over the whole list.
 
     The member table serves a page at a time; these figures are counted over all
@@ -1389,15 +1712,21 @@ def meeting_rollup(meeting_id: str) -> dict[str, Any]:
     if db.scalar("SELECT 1 FROM meetings WHERE id = %s", (meeting_id,)) is None:
         raise HTTPException(status_code=404, detail="Unknown meeting")
 
-    totals = db.one(_ROLLUP.format(cols="'' AS all_rows", group="1"), (meeting_id,))
+    scoped = access.invitee(scope)
+    totals = db.one(
+        _ROLLUP.format(cols="'' AS all_rows", group="1", invitee=scoped), (meeting_id,)
+    )
     by_pc = db.rows(
-        _ROLLUP.format(cols="p.parliament_name AS pc", group="p.parliament_name"),
+        _ROLLUP.format(
+            cols="p.parliament_name AS pc", group="p.parliament_name", invitee=scoped
+        ),
         (meeting_id,),
     )
     by_ac = db.rows(
         _ROLLUP.format(
             cols="p.parliament_name AS pc, i.constituency_name AS ac",
             group="p.parliament_name, i.constituency_name",
+            invitee=scoped,
         ),
         (meeting_id,),
     )
@@ -1419,7 +1748,10 @@ def meeting_rollup(meeting_id: str) -> dict[str, Any]:
 
 @router.put("/{meeting_id}/members/{mid}/remarks")
 def save_remarks(
-    meeting_id: str, mid: str, body: RemarksIn = Body(...)
+    meeting_id: str,
+    mid: str,
+    body: RemarksIn = Body(...),
+    scope: Scope = Depends(caller_scope),
 ) -> dict[str, Any]:
     """Record (or clear) one absentee's feedback remark.
 
@@ -1429,7 +1761,8 @@ def save_remarks(
     with the rest of the party estate and rows there are not ours to destroy.
     """
     invitee = db.one(
-        f"""{_MEMBER_COLS} WHERE i.meeting_id = %s AND i.membership_id = %s LIMIT 1""",
+        f"""{_MEMBER_COLS} WHERE i.meeting_id = %s AND i.membership_id = %s
+              AND {access.invitee(scope)} LIMIT 1""",
         (meeting_id, mid),
     )
     if invitee is None:
@@ -1476,7 +1809,11 @@ def save_remarks(
         )
 
     saved = db.one(
-        f"""{_MEMBER_COLS} WHERE i.meeting_id = %s AND i.membership_id = %s LIMIT 1""",
+        f"""{_MEMBER_COLS} WHERE i.meeting_id = %s AND i.membership_id = %s
+              AND {access.invitee(scope)} LIMIT 1""",
         (meeting_id, mid),
     )
-    return {"member": adapt.member(saved or invitee), "meeting": get_meeting(meeting_id)}
+    return {
+        "member": adapt.member(saved or invitee),
+        "meeting": get_meeting(meeting_id, scope),
+    }

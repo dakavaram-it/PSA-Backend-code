@@ -25,6 +25,11 @@ DB = {
 
 DB_TIMEOUT_SECONDS = int(os.getenv("DB_TIMEOUT_SECONDS", "60"))
 
+# How long the server waits for a metadata or row lock before erroring. Short on purpose:
+# waiting on a lock is not work, and the read path retries once, so a long wait costs a
+# worker twice over.
+DB_LOCK_WAIT_SECONDS = int(os.getenv("DB_LOCK_WAIT_SECONDS", "10"))
+
 # Programmes' own roster tables (`role`, `program_role`, …) live in this sibling
 # schema, not `mytdp` — the same RDS user has cross-schema read access, so
 # queries qualify the table name (`{PARTY_TRACK_DB}.role`) rather than opening
@@ -46,6 +51,26 @@ LEADER_PARTY_ID = int(os.getenv("LEADER_PARTY_ID", "872"))
 MAX_PAGE_SIZE = int(os.getenv("MAX_PAGE_SIZE", "3000"))
 
 MAX_REMARKS_CHARS = int(os.getenv("MAX_REMARKS_CHARS", "2000"))
+
+# --- Session ---------------------------------------------------------------
+# This service mints nothing: the portal (portal-frontend-code/Backend) issues
+# the token and both sides verify it with the same secret and algorithm. See
+# auth.py for why the key is the base64-*decoded* secret.
+JWT_SECRET = os.getenv("JWT_SECRET", "")
+JWT_ALGORITHM = os.getenv("ALGORITHM", "HS512").strip('"')
+
+# A token stops being a session after this, counted from its `iat` — the same
+# 8-hour window the portal's own SESSION_TTL uses, whatever `exp` says.
+SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", str(8 * 60 * 60)))
+
+# The portal's schema, holding a user's assembly grants
+# (user_state_access_info / user_constituency_access_info). Read cross-schema by
+# the same RDS user, the same way PARTY_TRACK_DB is.
+PORTAL_DB = os.getenv("PORTAL_DB_NAME", "dakavara_pa")
+
+# How long a resolved grant is reused for. A grant changed in the portal lands
+# within the window rather than at the next login.
+ACCESS_CACHE_SECONDS = int(os.getenv("ACCESS_CACHE_SECONDS", "30"))
 
 # Vite dev server by default; set to the deployed frontend origin in production.
 CORS_ORIGINS = [
